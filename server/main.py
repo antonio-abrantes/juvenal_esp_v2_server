@@ -1,4 +1,4 @@
-"""Juvenal Server: entradas existentes ligadas ao núcleo comum da fase 01."""
+"""Juvenal Server: núcleo comum, saídas e ferramentas com catálogo administrável."""
 
 import asyncio
 import base64
@@ -16,10 +16,13 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from conversation import ConversationEngine
+from automation_catalog import CatalogStore
+from catalog_api import create_catalog_router
 from legacy_esp import serve_legacy_esp
 from llm_client import LLMClient
 from response_output import ResponseOutput
 from runtime import CapacityBusy
+from tools.home_assistant import AutomationTools
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
@@ -32,6 +35,7 @@ device_clients = set()
 tasks = set()
 agent_state = "idle"
 resume_task = None
+catalog = CatalogStore(settings.data_dir)
 
 
 def spawn(coroutine, name):
@@ -65,7 +69,8 @@ def panel_authenticated(headers):
         return True
     expected = "Basic " + base64.b64encode(
         f"{settings.panel_username}:{settings.panel_password}".encode()).decode()
-    return hmac.compare_digest(headers.get("authorization", ""), expected)
+    return hmac.compare_digest(headers.get("authorization", "").encode("utf-8"),
+                               expected.encode("utf-8"))
 
 
 def can_operate(ws):
@@ -210,7 +215,11 @@ async def lifespan(app):
             transcriber = await asyncio.to_thread(WhisperTranscriber, **whisper_options())
         except Exception:
             logger.warning("STT indisponível; entrada textual continua disponível.")
-    engine = ConversationEngine(llm, output, broadcast, set_state, transcriber)
+    tools = AutomationTools(catalog, llm.provider)
+    engine = ConversationEngine(llm, output, broadcast, set_state, transcriber, tools=tools)
+    capability = await tools.capability()
+    logger.info("Ferramentas: disponíveis=%s motivo=%s",
+                capability["available"], capability["reason"] or "ready")
     try:
         if settings.local_voice_enabled and transcriber is not None:
             try:
@@ -234,6 +243,7 @@ async def lifespan(app):
             engine.active.cancelled = True
         llm.cancel()
         output.cancel()
+        tools.cancel()
         if wake_detector:
             await asyncio.to_thread(wake_detector.stop)
         for task in list(tasks):
@@ -253,6 +263,8 @@ async def lifespan(app):
 
 
 app = FastAPI(title="Juvenal Server", lifespan=lifespan)
+app.include_router(create_catalog_router(
+    catalog, panel_authenticated, lambda: engine.tools if engine else None))
 frontend_dir = PROJECT_ROOT / "frontend"
 app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
 
@@ -267,6 +279,8 @@ async def serve_index(request: Request):
 @app.get("/health")
 async def health():
     output = engine.output if engine else None
+    tool_capability = (await engine.tools.capability() if engine else
+                       {"available": False, "reason": "server_starting", "catalog_valid": False})
     return {"status": "ok" if engine and not engine.closing else "starting",
             "state": agent_state, "llm": engine is not None,
             "asr": transcriber is not None, "tts": bool(output and output.engine),
@@ -275,7 +289,8 @@ async def health():
             "busy": bool(engine and (engine.active or engine.workers_busy)),
             "capabilities": {"text_input": True, "local_voice": settings.local_voice_enabled,
                              "esp_legacy_input": transcriber is not None,
-                             "esp_playback": False, "ws_v1": False}}
+                             "esp_playback": False, "ws_v1": False,
+                             "tools": tool_capability}}
 
 
 @app.websocket("/ws")

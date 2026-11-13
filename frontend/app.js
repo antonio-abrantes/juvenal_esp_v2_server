@@ -127,6 +127,12 @@ function handleEvent(msg) {
       }
       break;
 
+    case "tool_result":
+      if (msg.status === "unknown") {
+        addMessage("system", "O resultado da automação é incerto. Nenhum reenvio automático será feito.");
+      }
+      break;
+
     case "history_cleared":
       currentAgentMsg = null;
       conversation.innerHTML = `

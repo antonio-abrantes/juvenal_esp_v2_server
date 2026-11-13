@@ -193,3 +193,61 @@ class Settings:
 
 
 settings = Settings.from_environment()
+
+
+@dataclass(frozen=True)
+class ToolSettings:
+    enabled: bool = False
+    provider_confirmed: bool = False
+    provider: str = ""
+    model: str = ""
+    adapter: str = "openai-chat-completions"
+    endpoint_url: str = ""
+    endpoint_key: str = ""
+    auth_header: str = ""
+    auth_prefix: str = ""
+    contract: str = ""
+    contract_confirmed: bool = False
+    timeout: float = 15
+    confirmation_ttl: float = 60
+    max_rounds: int = 3
+    max_calls: int = 4
+    catalog_bytes: int = 262144
+    catalog_entries: int = 200
+    error: str = ""
+
+    @classmethod
+    def from_environment(cls):
+        try:
+            url = os.getenv("HA_AUTOMATION_URL", "").strip()
+            key = os.getenv("HA_AUTOMATION_API_KEY", "")
+            header = os.getenv("HA_AUTOMATION_AUTH_HEADER", "").strip()
+            prefix = os.getenv("HA_AUTOMATION_AUTH_PREFIX", "")
+            if url:
+                validate_url(url, "HA_AUTOMATION_URL")
+            if (header and not re.fullmatch(r"[!#$%&'*+.^_\x60|~0-9A-Za-z-]+", header)
+                    or any(c in key + prefix for c in "\r\n")
+                    or key and not header
+                    or header.lower() in {"host", "content-type", "content-length", "transfer-encoding"}):
+                raise ValueError()
+            return cls(
+                enabled=flag("TOOLS_ENABLED"),
+                provider_confirmed=flag("LLM_TOOL_CALLING_CONFIRMED"),
+                provider=os.getenv("LLM_TOOL_CALLING_PROVIDER", "").strip().lower(),
+                model=os.getenv("LLM_TOOL_CALLING_MODEL", "").strip(),
+                adapter=os.getenv("LLM_TOOL_CALLING_ADAPTER", "openai-chat-completions").strip(),
+                endpoint_url=url, endpoint_key=key, auth_header=header, auth_prefix=prefix,
+                contract=os.getenv("HA_AUTOMATION_CONTRACT", "").strip(),
+                contract_confirmed=flag("HA_AUTOMATION_CONTRACT_CONFIRMED"),
+                timeout=number("TOOL_TIMEOUT_SECONDS", 15, 15),
+                confirmation_ttl=number("TOOL_CONFIRMATION_TTL_SECONDS", 60, 300),
+                max_rounds=integer("TOOL_MAX_ROUNDS", 3, 3),
+                max_calls=integer("TOOL_MAX_CALLS", 4, 4),
+                catalog_bytes=integer("AUTOMATION_CATALOG_MAX_BYTES", 262144, 262144, 1024),
+                catalog_entries=integer("AUTOMATION_CATALOG_MAX_ENTRIES", 200, 200))
+        except ValueError:
+            # Configuração de tools inválida desabilita ações, sem derrubar a conversa.
+            return cls(error="tool_configuration_invalid")
+
+
+tool_settings = ToolSettings.from_environment()

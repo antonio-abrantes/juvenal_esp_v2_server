@@ -1,17 +1,19 @@
 """Turno comum, contextos limitados e admissão serializada entre as entradas."""
 
 import asyncio
+import json
 import logging
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from config import settings
+from config import settings, tool_settings
 from diagnostics import log_text
 from dismissal_checker import _is_dismissal_candidate, confirm_dismissal_with_llm
 from llm_client import LLMError
 from runtime import CapacityBusy
+from tools.registry import ToolCall, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -21,14 +23,20 @@ class ConversationContext:
     conversation_id: str = field(default_factory=lambda: uuid4().hex)
     history: list = field(default_factory=list)
     updated: float = field(default_factory=time.monotonic)
+    pending_action: object = None
 
     def commit(self, user, assistant):
-        self.history.extend([{"role": "user", "content": user},
-                             {"role": "assistant", "content": assistant}])
-        while self.history and (len(self.history) > settings.history_messages or sum(
-                len(m["content"].encode("utf-8")) for m in self.history) > settings.history_bytes):
-            # Nesta fase o histórico contém somente pares user/assistant completos.
-            del self.history[:2]
+        self.commit_messages([{"role": "user", "content": user},
+                              {"role": "assistant", "content": assistant}])
+
+    def commit_messages(self, messages):
+        self.history.extend(messages)
+        while self.history and (len(self.history) > settings.history_messages or
+                len(json.dumps(self.history, ensure_ascii=False).encode("utf-8")) > settings.history_bytes):
+            # Remover o turno inteiro preserva cada par tool_call/resultado.
+            next_user = next((index for index, message in enumerate(self.history[1:], 1)
+                              if message["role"] == "user"), len(self.history))
+            del self.history[:next_user]
         self.updated = time.monotonic()
 
 
@@ -36,10 +44,14 @@ class ConversationContext:
 class Interaction:
     origin: str
     context: ConversationContext
+    identity: str = ""
     session_id: str = field(default_factory=lambda: uuid4().hex)
     turn_id: str = field(default_factory=lambda: uuid4().hex)
     deadline: float = field(default_factory=lambda: time.monotonic() + settings.interaction_timeout)
     cancelled: bool = False
+    tool_results: dict = field(default_factory=dict)
+    offered_automations: set = field(default_factory=set)
+    catalog_revision: str = ""
 
     @property
     def remaining(self):
@@ -60,17 +72,19 @@ class TurnResult:
 
 
 class ConversationEngine:
-    def __init__(self, llm, output, emit, set_state, transcriber=None):
+    def __init__(self, llm, output, emit, set_state, transcriber=None, tools=None):
         self.llm, self.output = llm, output
         self.emit, self.set_state = emit, set_state
         self.transcriber = transcriber
+        self.tools = tools
         self.contexts = OrderedDict()
         self.active = None
         self.closing = False
 
     @property
     def workers_busy(self):
-        return self.llm.busy or self.output.busy or bool(self.transcriber and self.transcriber.busy)
+        return (self.llm.busy or self.output.busy or bool(self.tools and self.tools.busy)
+                or bool(self.transcriber and self.transcriber.busy))
 
     def begin(self, origin, identity):
         # Executado sem await: a reserva é indivisível no event loop.
@@ -87,7 +101,7 @@ class ConversationEngine:
         context = self.contexts[identity]
         context.updated = now
         self.contexts.move_to_end(identity)
-        self.active = Interaction(origin, context)
+        self.active = Interaction(origin, context, identity=identity)
         return self.active
 
     def clear(self, identity):
@@ -97,10 +111,15 @@ class ConversationEngine:
 
     def release(self, session):
         session.cancelled = True
+        pending = session.context.pending_action
+        if pending is not None and not pending.delivered:
+            session.context.pending_action = None
         if self.active is session:
             self.active = None
         self.llm.cancel()
         self.output.cancel()
+        if self.tools:
+            self.tools.cancel()
 
     async def event(self, session, event, **payload):
         await self.emit({"event": event, "session_id": session.session_id,
@@ -135,6 +154,7 @@ class ConversationEngine:
             await self.event(session, "error", code="input_text_limit")
             return TurnResult("failed")
         session.turn_id = uuid4().hex
+        session.tool_results.clear()
         started = time.monotonic()
         if settings.log_transcripts:
             label = "Entrada textual" if session.origin == "web" else "Transcrição reconhecida"
@@ -143,40 +163,154 @@ class ConversationEngine:
         await self.event(session, "user_message", text=text)
         await self.set_state("processing")
         dismissal = False
-        if classify_dismissal and _is_dismissal_candidate(text):
+        if classify_dismissal and session.context.pending_action is None and _is_dismissal_candidate(text):
             dismissal = await asyncio.wait_for(
                 confirm_dismissal_with_llm(text, self.llm), min(15, session.remaining))
             session.check()
         await self.event(session, "assistant_start")
         response = ""
-        stream = self.llm.chat(text, list(session.context.history), timeout=session.remaining)
+        trace = [{"role": "user", "content": text}]
         try:
-            async for token in stream:
-                session.check()
-                response += token
-                await self.event(session, "assistant_token", token=token)
+            response = await self._generate_response(text, session, trace)
+            if not response.strip() or len(response.encode("utf-8")) > settings.text_bytes:
+                raise LLMError("response_limit_or_empty")
             session.check()
         except asyncio.CancelledError:
+            session.context.pending_action = None
+            self._preserve_interrupted_trace(session, trace)
             raise
         except Exception as exc:
+            session.context.pending_action = None
+            had_tools = self._preserve_interrupted_trace(session, trace)
             code = str(exc) if isinstance(exc, LLMError) else "conversation_failed"
             logger.warning("Turno %s falhou: %s", session.turn_id, code)
             await self.event(session, "assistant_end", status="failed")
             await self.event(session, "error", code=code)
             # Resposta parcial nunca é sintetizada nem enviada ao endpoint.
             if session.remaining > 0 and not session.cancelled and not self.output.busy:
-                await self.announce("Desculpe, não consegui concluir sua resposta. Pode tentar novamente?", session)
+                message = ("A conversa foi interrompida após uma etapa de automação. "
+                           "Não vou repetir ações; o resultado disponível ficou registrado."
+                           if had_tools else
+                           "Desculpe, não consegui concluir sua resposta. Pode tentar novamente?")
+                await self.announce(message, session)
             return TurnResult("failed")
-        finally:
-            await stream.aclose()
-        session.context.commit(text, response)
-        logger.info("Turno %s: LLM concluído em %d ms", session.turn_id,
+        trace.append({"role": "assistant", "content": response})
+        session.context.commit_messages(trace)
+        logger.info("Turno %s: resposta concluída em %d ms", session.turn_id,
                     int((time.monotonic() - started) * 1000))
         await self.event(session, "assistant_end", status="complete")
         await self.set_state("speaking")
         delivery_started = time.monotonic()
-        delivery = await self.output.deliver_response(response, session)
+        try:
+            delivery = await self.output.deliver_response(response, session)
+        except BaseException:
+            session.context.pending_action = None
+            raise
+        if not delivery.ok:
+            session.context.pending_action = None
+        elif self.tools:
+            self.tools.confirmation_delivered(session)
         await self.event(session, "delivery_result", status=delivery.status, mode=delivery.mode,
                          error=delivery.error, http_status=delivery.http_status)
         self._log_delivery(session, delivery, int((time.monotonic() - delivery_started) * 1000))
         return TurnResult("complete" if delivery.ok else "delivery_failed", response, dismissal)
+
+    @staticmethod
+    def _preserve_interrupted_trace(session, trace):
+        if not any(message["role"] == "tool" for message in trace):
+            return False
+        session.context.commit_messages([*trace, {"role": "assistant", "content":
+            "Conversa interrompida. Preserve os resultados das ferramentas; não repita ações."}])
+        return True
+
+    async def _batch(self, calls, session, trace):
+        trace.append({"role": "assistant", "content": None,
+                      "tool_calls": [call.message() for call in calls]})
+        results = []
+        try:
+            for call in calls:
+                session.check()
+                if results and results[-1].status != "success":
+                    result = ToolResult("denied", "batch_stopped",
+                                        "Outra ação desta rodada precisa de atenção; nada foi enviado.")
+                else:
+                    result = await self.tools.registry.execute(call, session)
+                results.append(result)
+                trace.append({"role": "tool", "tool_call_id": call.call_id,
+                              "content": result.content()})
+                await self.event(session, "tool_result", name=call.name,
+                                 status=result.status, code=result.code)
+        finally:
+            # Cancelamento não pode deixar chamadas sem resultado no histórico.
+            for call in calls[len(results):]:
+                trace.append({"role": "tool", "tool_call_id": call.call_id,
+                    "content": ToolResult("unknown", "tool_interrupted",
+                        "Espera interrompida; não repetir a ação.").content()})
+        return results
+
+    async def _generate_response(self, text, session, trace):
+        if self.tools and session.context.pending_action is not None:
+            pending = session.context.pending_action
+            call = ToolCall("confirm_" + uuid4().hex, "home_assistant", pending.arguments)
+            trace.append({"role": "assistant", "content": None, "tool_calls": [call.message()]})
+            try:
+                result = await self.tools.consume_confirmation(text, session)
+            except BaseException:
+                trace.append({"role": "tool", "tool_call_id": call.call_id, "content":
+                    ToolResult("unknown", "confirmation_interrupted",
+                               "Confirmação interrompida; não repetir.").content()})
+                raise
+            trace.append({"role": "tool", "tool_call_id": call.call_id, "content": result.content()})
+            await self.event(session, "tool_result", name="home_assistant",
+                             status=result.status, code=result.code)
+            await self.event(session, "assistant_token", token=result.message)
+            return result.message
+        call_count = 0
+        call_ids = set()
+        confirmed = []
+        for round_index in range(tool_settings.max_rounds + 1):
+            session.check()
+            schemas, instructions, revision = (await self.tools.offer(session) if self.tools
+                                               else ([], "", ""))
+            if round_index >= tool_settings.max_rounds or call_count >= tool_settings.max_calls:
+                schemas = []
+                instructions += "\nLimite de ferramentas atingido. Termine sem pedir novas ações."
+            session.catalog_revision = revision
+            reply, response = {}, ""
+            stream = self.llm.chat(text, timeout=session.remaining,
+                messages=[*session.context.history, *trace], tool_schemas=schemas,
+                instructions=instructions, reply=reply)
+            try:
+                async for token in stream:
+                    session.check()
+                    response += token
+                    # Com tools, aguardar conclusão para não anunciar uma ação ainda não executada.
+                    if not schemas:
+                        await self.event(session, "assistant_token", token=token)
+            finally:
+                await stream.aclose()
+            calls = reply.get("tool_calls", [])
+            if not calls:
+                if schemas:
+                    await self.event(session, "assistant_token", token=response)
+                return response
+            if (not self.tools or not schemas or len(calls) + call_count > tool_settings.max_calls
+                    or any(call.call_id in call_ids for call in calls)):
+                raise LLMError("tool_call_limit_or_duplicate")
+            call_count += len(calls)
+            call_ids.update(call.call_id for call in calls)
+            results = await self._batch(calls, session, trace)
+            for call, result in zip(calls, results):
+                if result.status == "success":
+                    label = call.arguments.get("automation_id", call.name)
+                    if not isinstance(label, str) or len(label) > 64:
+                        label = call.name
+                    if label not in confirmed:
+                        confirmed.append(label)
+            interrupted = next((item for item in results if item.status != "success"), None)
+            if interrupted:
+                summary = "".join("Execução confirmada para " + label + ". " for label in confirmed)
+                response = summary + interrupted.message
+                await self.event(session, "assistant_token", token=response)
+                return response
+        raise LLMError("tool_round_limit")

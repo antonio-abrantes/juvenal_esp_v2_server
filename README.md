@@ -2,13 +2,13 @@
 
 Servidor Python do assistente de voz **Juvenal**, desenvolvido por Antônio Abrantes. Centraliza transcrição, conversa com IA, contexto e entrega da resposta, preparando a integração com um dispositivo **ESP32-S3** independente do Home Assistant.
 
-Este componente terá repositório próprio: **`juvenal_esp_v2_server`**, associado ao firmware `juvenal_esp_v2`. A pasta local do servidor permanece `juvenal_server`; firmware e servidor têm históricos separados.
+Este componente usa repositório próprio: **`juvenal_esp_v2_server`**, associado ao firmware `juvenal_esp_v2`. A pasta local do servidor permanece `juvenal_server`; firmware e servidor têm históricos separados.
 
 ## Estado do projeto
 
 A fase 01 está encerrada no escopo de núcleo e saídas configuráveis, com validação manual parcial no Windows. O usuário comprovou detecção da wake word, captura/transcrição, resposta do LLM, recebimento de texto no webhook com HTTP 200 e retorno à escuta, inclusive após falha HTTP. A transcrição voltou a aparecer no terminal quando habilitada.
 
-Ferramentas e catálogo de automações Home Assistant/n8n são a próxima etapa. WebSocket por interação, retorno PCM/TTS ao ESP32 e reprodução pelo MAX98357A permanecem futuros. O adaptador `/ws/esp` existente é legado; sua presença não comprova integração com o firmware atual.
+A fase 02 entrega ferramentas estruturadas e catálogo de automações Home Assistant/n8n com edição autenticada pelo painel. A fase foi encerrada após o aceite manual informado pelo usuário para o painel, catálogo e conversa. A execução real de ações ainda depende da confirmação do provedor/modelo e do contrato do workflow. WebSocket por interação, retorno PCM/TTS ao ESP32 e reprodução pelo MAX98357A permanecem futuros. O adaptador `/ws/esp` existente é legado; sua presença não comprova integração com o firmware atual.
 
 O firmware experimental **Juvenal Visual v0.4**, no projeto separado `juvenal_http_teste`, continua usando MicroWakeWord, gravação WAV PCM16 e HTTP POST. Ele não utiliza o transporte futuro deste servidor. A integração será implementada no firmware principal `juvenal_esp`, com ESP-IDF **5.4.4**.
 
@@ -23,7 +23,7 @@ As integrações têm responsabilidades distintas:
 | `LLM_PROVIDER` e variáveis do provedor | Gerar a resposta da IA; suporta OpenAI, Ollama, Groq, servidor compatível e webhook conversacional |
 | `WEBHOOK_URL` / `WEBHOOK_API_KEY` | Provedor alternativo, ativo somente com `LLM_PROVIDER=webhook`; contrato `message` → `response` |
 | `AUDIO_TEXT_ENDPOINT_URL` | Receber a resposta final já produzida; ativo com `AUDIO_OUTPUT_MODE=endpoint` |
-| Ferramenta HA/n8n | Executar ações permitidas; será implementada na próxima etapa com configuração própria |
+| Ferramenta HA/n8n | Executar ações do catálogo, com permissões, confirmação e configuração `HA_AUTOMATION_*` própria |
 
 Com OpenAI como provedor e saída `endpoint`, a resposta é gerada pela OpenAI e depois enviada ao webhook. O corpo devolvido por esse webhook pode ser registrado para diagnóstico; não é interpretado como nova resposta da IA, ferramenta ou áudio.
 
@@ -119,9 +119,19 @@ O modelo que reconhece a palavra **“Juvenal”**, identificado nos arquivos co
 
 Esse modelo reconhece a palavra de ativação. A transcrição da fala seguinte é responsabilidade do Whisper; a resposta conversacional vem do provedor configurado. O treinamento não é executado pelo Juvenal Server. Preserve os avisos e licenças aplicáveis aos modelos e componentes utilizados.
 
+## Automações e ferramentas
+
+O botão **Automações** abre o cadastro no painel. Configure `PANEL_USERNAME` e `PANEL_PASSWORD` no `.env` e reinicie: administrar o catálogo exige autenticação mesmo no computador local. É possível cadastrar, editar, habilitar, desabilitar e remover entradas; salvar não executa ações.
+
+O arquivo `data/automacoes.md` é criado no primeiro salvamento, sob `JUVENAL_DATA_DIR`, e fica fora do Git. O backend valida ações, entidades, parâmetros e identidades permitidas. Edições concorrentes geram conflito; uma edição inválida bloqueia ações. A revisão anterior é preservada em `automacoes.md.previous`.
+
+As ferramentas têm padrão `TOOLS_ENABLED=false`. Para ativar, confirme explicitamente o suporte estruturado da combinação provedor/modelo/adaptador e o contrato textual separado do n8n. Não reutilize automaticamente o webhook de saída ou de WAV. Veja [configuração das ferramentas](docs/configuration.md#ferramentas-e-catálogo--fase-02).
+
+Confirmações expiram e valem somente para os parâmetros, identidade e revisão apresentados. Em saída `endpoint`, confirme numa nova ativação da wake word. Cancelamento não desfaz um envio externo; resultado incerto não provoca repetição.
+
 ## Próximas entregas e validação
 
-A próxima fase adiciona ferramentas estruturadas, permissões e catálogo de automações. A etapa seguinte integra WebSocket por sessão, áudio PCM16 e reprodução no ESP32-S3, mantendo os destinos de saída independentes.
+A próxima etapa integra WebSocket por sessão, áudio PCM16 e reprodução no ESP32-S3, mantendo os destinos de saída independentes. A validação real das ferramentas e do workflow n8n permanece pendente.
 
 Permanecem sem comprovação nesta entrega: conectividade após o último ajuste da URL local, log do corpo devolvido pelo webhook, reprodução local nesta versão, todos os cenários de limites/cancelamento, execução Linux/systemd e áudio no ESP32. O recebimento HTTP 200 anterior continua sendo uma evidência válida de entrega textual.
 

@@ -13,7 +13,7 @@ Providers suportados:
 import os
 from dataclasses import dataclass
 from typing import Optional
-from config import settings  # carrega o .env da raiz uma única vez
+from config import settings, tool_settings  # carrega o .env da raiz uma única vez
 
 
 @dataclass
@@ -121,3 +121,17 @@ def list_providers() -> None:
         print(f"      Info   : {p.description}")
     print("─" * 50)
     print(f"Para chavear: alterar LLM_PROVIDER= no ficheiro .env\n")
+
+
+def tool_calling_capability(provider):
+    active = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
+    if tool_settings.error:
+        return False, tool_settings.error
+    if not tool_settings.enabled:
+        return False, "tools_disabled"
+    if active == "webhook" or tool_settings.adapter != "openai-chat-completions":
+        return False, "structured_adapter_unavailable"
+    if (not tool_settings.provider_confirmed or tool_settings.provider != active
+            or tool_settings.model != provider.model):
+        return False, "provider_model_tools_unconfirmed"
+    return True, ""

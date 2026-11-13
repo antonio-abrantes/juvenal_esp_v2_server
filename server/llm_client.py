@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import queue
+import re
 import threading
 import time
 from datetime import datetime
@@ -13,6 +14,7 @@ import requests
 from config import settings
 from providers import get_active_provider
 from runtime import SingleWorker
+from tools.registry import ArgumentError, ToolCall, decode_json
 
 logger = logging.getLogger(__name__)
 _DIAS = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
@@ -70,7 +72,8 @@ class LLMClient:
             payload["reasoning_effort"] = "none"
         return payload
 
-    async def chat(self, user_message, history=(), timeout=None):
+    async def chat(self, user_message, history=(), timeout=None, *, messages=None,
+                   tool_schemas=(), instructions="", reply=None):
         timeout = min(timeout or settings.llm_timeout, settings.llm_timeout)
         deadline = time.monotonic() + timeout
         tokens = queue.Queue(maxsize=128)
@@ -93,11 +96,21 @@ class LLMClient:
 
         def produce():
             start_gate.wait()
-            messages = [{"role": "system", "content": _resolve_placeholders(self._prompt_template)},
-                        *history, {"role": "user", "content": user_message}]
-            payload = ({"message": user_message} if self._is_webhook else
-                       self._payload(messages, True))
+            conversation = [{"role": "system", "content": _resolve_placeholders(self._prompt_template)}]
+            if instructions:
+                conversation.append({"role": "system", "content": instructions})
+            conversation.extend(messages if messages is not None else
+                                [*history, {"role": "user", "content": user_message}])
+            payload = ({"message": (instructions + "\n\nMensagem do usuário:\n" + user_message
+                                    if instructions else user_message)} if self._is_webhook else
+                       self._payload(conversation, True))
+            if tool_schemas:
+                if self._is_webhook:
+                    raise LLMError("structured_adapter_unavailable")
+                payload.update(tools=list(tool_schemas), tool_choice="auto", parallel_tool_calls=False)
             total = 0
+            calls, content = {}, []
+            finish_reason = None
             try:
                 with requests.post(self._url, headers=self._headers, json=payload,
                                    stream=True, timeout=(min(5, timeout), timeout),
@@ -120,6 +133,8 @@ class LLMClient:
                         if len(text.encode("utf-8")) > settings.text_bytes:
                             raise LLMError("response_limit")
                         publish(text.strip())
+                        if reply is not None:
+                            reply.update(content=text.strip(), tool_calls=[])
                         return
                     # Limitar linhas SSE; iter_lines() pode acumular uma linha infinita.
                     pending = bytearray()
@@ -140,30 +155,88 @@ class LLMClient:
                             if data == b"[DONE]":
                                 completed = True
                                 break
-                            event = json.loads(data)
+                            event = decode_json(data)
+                            if not isinstance(event, dict):
+                                raise LLMError("provider_invalid_response")
                             if "error" in event:
                                 raise LLMError("provider_stream_error")
                             choices = event.get("choices", [])
                             if not choices:
                                 continue
                             choice = choices[0]
+                            if not isinstance(choice, dict) or choice.get("index", 0) != 0:
+                                raise LLMError("provider_invalid_response")
                             reason = choice.get("finish_reason")
-                            if reason in {"length", "content_filter", "tool_calls", "function_call"}:
+                            if reason in {"length", "content_filter", "function_call"}:
                                 raise LLMError("provider_incomplete_response")
-                            if reason == "stop":
+                            if reason in {"stop", "tool_calls"}:
+                                finish_reason = reason
                                 completed = True
-                            token = choice.get("delta", {}).get("content")
+                            delta = choice.get("delta", {})
+                            if not isinstance(delta, dict):
+                                raise LLMError("provider_invalid_response")
+                            fragments = delta.get("tool_calls") or []
+                            if not isinstance(fragments, list) or fragments and not tool_schemas:
+                                raise LLMError("provider_unexpected_tools")
+                            for fragment in fragments:
+                                index = fragment.get("index")
+                                if type(index) is not int or not 0 <= index < 4:
+                                    raise LLMError("provider_tool_call_limit")
+                                call = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                                if fragment.get("type") not in {None, "function"}:
+                                    raise LLMError("provider_invalid_tool_call")
+                                identifier = fragment.get("id")
+                                if identifier:
+                                    if (not isinstance(identifier, str)
+                                            or call["id"] and call["id"] != identifier):
+                                        raise LLMError("provider_invalid_tool_call")
+                                    call["id"] = identifier
+                                function = fragment.get("function") or {}
+                                for part in ("name", "arguments"):
+                                    value = function.get(part) or ""
+                                    if not isinstance(value, str):
+                                        raise LLMError("provider_invalid_tool_call")
+                                    call[part] += value
+                                if (len(call["id"]) > 128 or len(call["name"]) > 64
+                                        or sum(len(item["arguments"].encode("utf-8"))
+                                               for item in calls.values()) > 16384):
+                                    raise LLMError("provider_tool_arguments_limit")
+                            token = delta.get("content")
                             if token:
                                 if not isinstance(token, str):
                                     raise LLMError("provider_invalid_response")
                                 total += len(token.encode("utf-8"))
                                 if total > settings.text_bytes:
                                     raise LLMError("response_limit")
+                                content.append(token)
                                 publish(token)
                         if completed:
                             break
                     if not completed:
                         raise LLMError("provider_interrupted_response")
+                    parsed_calls = []
+                    if calls:
+                        if finish_reason != "tool_calls":
+                            raise LLMError("provider_incomplete_tool_call")
+                        names = {item["function"]["name"] for item in tool_schemas}
+                        identifiers = set()
+                        for index in sorted(calls):
+                            call = calls[index]
+                            if (not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", call["id"])
+                                    or call["id"] in identifiers or call["name"] not in names):
+                                raise LLMError("provider_invalid_tool_call")
+                            identifiers.add(call["id"])
+                            try:
+                                arguments = decode_json(call["arguments"])
+                            except ArgumentError:
+                                raise LLMError("provider_invalid_tool_arguments") from None
+                            if not isinstance(arguments, dict):
+                                raise LLMError("provider_invalid_tool_arguments")
+                            parsed_calls.append(ToolCall(call["id"], call["name"], arguments))
+                    elif finish_reason == "tool_calls":
+                        raise LLMError("provider_empty_tool_call")
+                    if reply is not None:
+                        reply.update(content="".join(content), tool_calls=parsed_calls)
             except LLMError:
                 raise
             except Exception:
@@ -191,7 +264,7 @@ class LLMClient:
                     queued_bytes -= size
                 response_bytes += size
                 yield token
-            if not response_bytes:
+            if not response_bytes and not (reply is not None and reply.get("tool_calls")):
                 raise LLMError("provider_empty_response")
         finally:
             stop.set()

@@ -35,10 +35,52 @@
 
     <div class="controls">
       <button id="clear-btn" onclick="clearHistory()">🗑️ Limpar conversa</button>
+      <button id="catalog-open" type="button">Automações</button>
       <div id="connection-dot" class="dot disconnected" title="WebSocket"></div>
     </div>
   </div>
 
+  <dialog id="catalog-dialog" aria-labelledby="catalog-title">
+    <div class="catalog-header">
+      <h2 id="catalog-title">Automações</h2>
+      <button id="catalog-close" type="button" aria-label="Fechar catálogo">Fechar</button>
+    </div>
+    <p class="catalog-note">Cadastros não executam ações. A execução depende das ferramentas configuradas no servidor.</p>
+    <p id="catalog-status" role="status" aria-live="polite"></p>
+    <div class="catalog-toolbar">
+      <button id="catalog-reload" type="button">Recarregar</button>
+      <button id="catalog-new" type="button" disabled>Nova automação</button>
+    </div>
+    <ul id="catalog-list"></ul>
+    <form id="catalog-form" class="hidden">
+      <label>ID estável <input id="automation-id" required maxlength="64" pattern="[a-z][a-z0-9_-]{0,63}"></label>
+      <label>Título <input id="automation-title" required maxlength="100"></label>
+      <label>Descrição <input id="automation-description" maxlength="400"></label>
+      <label><input id="automation-enabled" type="checkbox"> Habilitada no catálogo</label>
+      <label>Ação <select id="automation-action"></select></label>
+      <fieldset id="automation-parameters"><legend>Parâmetros permitidos</legend></fieldset>
+      <label>Exemplos e sinônimos, um por linha
+        <textarea id="automation-examples" rows="3" maxlength="1280"></textarea>
+      </label>
+      <label>Identidades permitidas, separadas por vírgula
+        <input id="automation-permissions" required value="local, web:operator" maxlength="1024">
+      </label>
+      <small>local: microfone do servidor; web:operator: operador do painel; esp:ID: dispositivo autenticado.</small>
+      <label>Confirmação
+        <select id="automation-confirmation">
+          <option value="always">Exigir confirmação</option>
+          <option value="never">Executar sem confirmação adicional</option>
+        </select>
+      </label>
+      <label>Orientação de resultado <input id="automation-result-hint" maxlength="200"></label>
+      <div class="catalog-toolbar">
+        <button type="submit">Salvar</button>
+        <button id="catalog-cancel" type="button">Cancelar edição</button>
+      </div>
+    </form>
+  </dialog>
+
   <script src="/static/app.js"></script>
+  <script src="/static/catalog.js"></script>
 </body>
 </html>
