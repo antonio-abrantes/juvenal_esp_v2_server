@@ -1,0 +1,179 @@
+:root {
+  --bg: #0f0f13;
+  --surface: #1a1a24;
+  --accent: #7c6af7;
+  --accent2: #56d4a0;
+  --text: #e8e8f0;
+  --muted: #666680;
+  --user-bg: #252535;
+  --agent-bg: #1e2d3a;
+  --radius: 16px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.container {
+  width: 100%;
+  max-width: 680px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 16px;
+  gap: 16px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo { font-size: 2rem; }
+h1 { font-size: 1.4rem; font-weight: 700; flex: 1; }
+
+.badge {
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  transition: all 0.3s;
+}
+.badge.idle       { background: #2a2a3a; color: var(--muted); }
+.badge.listening  { background: #1a3a2a; color: var(--accent2); animation: pulse 1s infinite; }
+.badge.processing { background: #2a2a4a; color: var(--accent); }
+.badge.speaking   { background: #3a2a1a; color: #f7a26a; }
+.badge.wake       { background: #3a1a3a; color: #f76af7; }
+
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
+
+/* Animação wake word */
+.wake-anim {
+  text-align: center;
+  padding: 20px;
+  position: relative;
+}
+.ripple {
+  width: 80px; height: 80px;
+  border-radius: 50%;
+  border: 3px solid var(--accent);
+  animation: ripple 1.2s ease-out infinite;
+  margin: 0 auto 12px;
+}
+@keyframes ripple { 0%{transform:scale(0.8);opacity:1} 100%{transform:scale(1.6);opacity:0} }
+
+/* Animação listening */
+.listen-anim { text-align: center; padding: 16px; }
+.bars {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 48px;
+  margin-bottom: 8px;
+}
+.bars span {
+  display: block;
+  width: 6px;
+  background: var(--accent2);
+  border-radius: 3px;
+  animation: bar 0.8s ease-in-out infinite;
+}
+.bars span:nth-child(2) { animation-delay: 0.1s; }
+.bars span:nth-child(3) { animation-delay: 0.2s; height: 36px !important; }
+.bars span:nth-child(4) { animation-delay: 0.1s; }
+@keyframes bar { 0%,100%{height:12px} 50%{height:40px} }
+
+.partial-text {
+  color: var(--accent2);
+  font-style: italic;
+  font-size: 0.95rem;
+  min-height: 24px;
+}
+
+/* Conversa */
+.conversation {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface) transparent;
+}
+
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  text-align: center;
+  padding: 40px;
+}
+
+.message {
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  max-width: 90%;
+  line-height: 1.5;
+  animation: fadein 0.2s ease;
+}
+@keyframes fadein { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
+
+.message.user {
+  background: var(--user-bg);
+  align-self: flex-end;
+  border-bottom-right-radius: 4px;
+}
+.message.user::before { content: "👤 "; font-size: 0.85rem; }
+
+.message.agent {
+  background: var(--agent-bg);
+  align-self: flex-start;
+  border-bottom-left-radius: 4px;
+  border-left: 3px solid var(--accent);
+}
+.message.agent::before { content: "🤖 "; font-size: 0.85rem; }
+.message.agent.streaming { border-color: var(--accent2); }
+
+/* Controls */
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+button {
+  background: var(--surface);
+  color: var(--muted);
+  border: 1px solid #333;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+}
+button:hover { background: #2a2a3a; color: var(--text); }
+
+.dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  margin-left: auto;
+}
+.dot.connected    { background: var(--accent2); }
+.dot.disconnected { background: #f76a6a; }
+
+.hidden { display: none !important; }

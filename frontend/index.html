@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Voice Agent — Juvehnal</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">🎙️</div>
+      <h1>Voice Agent</h1>
+      <div id="status-badge" class="badge idle">Aguardando "juvehnal"</div>
+    </header>
+
+    <div id="wake-word-anim" class="wake-anim hidden">
+      <div class="ripple"></div>
+      <span>Diga "juvehnal"...</span>
+    </div>
+
+    <div id="listening-anim" class="listen-anim hidden">
+      <div class="bars">
+        <span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <p id="partial-text" class="partial-text"></p>
+    </div>
+
+    <div class="conversation" id="conversation">
+      <div class="empty-state">
+        <p>💬 Diga <strong>"juvehnal"</strong> para começar</p>
+        <small>O agente está ouvindo em segundo plano</small>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="clear-btn" onclick="clearHistory()">🗑️ Limpar conversa</button>
+      <div id="connection-dot" class="dot disconnected" title="WebSocket"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

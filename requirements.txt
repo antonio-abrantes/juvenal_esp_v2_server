@@ -1,0 +1,6 @@
+# Perfil local completo por compatibilidade.
+# Os instaladores usam requirements-core.txt e acrescentam capacidades selecionadas.
+-r requirements-core.txt
+-r requirements-asr.txt
+-r requirements-local-input.txt
+-r requirements-local-output.txt

@@ -1,0 +1,4 @@
+numpy==1.26.4
+sounddevice==0.4.7
+piper-tts==1.8.0
+platformdirs==4.14.5

@@ -1,0 +1,4 @@
+numpy==1.26.4
+sounddevice==0.4.7
+pymicro-features==2.0.2
+ai-edge-litert==2.3.0
