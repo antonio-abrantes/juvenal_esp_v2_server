@@ -31,7 +31,7 @@ PROVIDERS: dict[str, ProviderConfig] = {
 
     "ollama": ProviderConfig(
         name="Ollama (Local)",
-        base_url="http://localhost:11434/v1",
+        base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
         api_key="ollama",                          # Ollama não precisa de key real
         model=os.getenv("OLLAMA_MODEL", "llama3.2"),
         description="LLM local, gratuito, sem internet. Requer Ollama instalado.",

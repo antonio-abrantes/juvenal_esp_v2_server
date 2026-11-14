@@ -96,6 +96,16 @@ O instalador preserva o `.env` existente e não inicia a aplicação ou outros s
 
 Whisper e Piper podem baixar modelos ao iniciar a capacidade correspondente. A saída endpoint comum dispensa Piper; a API HA com resposta no ESP precisa dele, mesmo quando a saída geral é endpoint. Detalhes: [configuração](docs/configuration.md) e [preparação Linux](docs/homelab-linux-setup.md).
 
+## Docker, GHCR e Portainer
+
+O empacotamento Docker está preparado para **linux/arm64** e **linux/amd64**, com Whisper/Piper na CPU, usuário sem root e volumes para configuração, dados e modelos. A imagem é headless: wake/microfone e alto-falante continuam no ESP.
+
+Os workflows publicam no GHCR **somente no push de tags**: vX.Y.Z-dev/beta/rc.N para o canal dev; vX.Y.Z para produção (prod/latest). Push em develop/main ou PR não dispara build. A tag constrói o commit apontado, independentemente da branch; nenhuma implantação é automática.
+
+Use os exemplos [Docker Compose](docker/compose.yml) ou [Swarm/Traefik](docker/stack.swarm.yml), colando o YAML no Portainer e importando o .env em Environment variables. Credenciais e persona pessoal não entram na imagem. A primeira publicação e execução nas duas arquiteturas ainda precisam de conferência manual.
+
+Veja [publicação, volumes, persona, Portainer e ajustes WSS do ESP](docker/README.md).
+
 ## Alteração do destino
 
 Para enviar a resposta ao webhook, use `AUDIO_OUTPUT_MODE=endpoint` e preencha `AUDIO_TEXT_ENDPOINT_*`. Para ouvir pelo computador, use `AUDIO_OUTPUT_MODE=local`, configure Piper/dispositivo e instale as dependências locais correspondentes. Reinicie o processo após mudar o `.env`.

@@ -1,0 +1,34 @@
+# Contexto por allowlist. Arquivos privados nem são enviados ao builder.
+**
+!Dockerfile
+!.dockerignore
+!requirements-core.txt
+!requirements-asr.txt
+!requirements-tts.txt
+!server/
+!server/*.py
+!server/tools/
+!server/tools/*.py
+!frontend/
+!frontend/*.html
+!frontend/*.js
+!frontend/*.css
+!configs/
+!configs/system_prompt.example.md
+!docker/
+!docker/entrypoint.py
+!docker/healthcheck.py
+
+# Defesa adicional caso a allowlist seja ampliada.
+**/.env*
+**/system_prompt.md
+**/__pycache__/
+**/*.pyc
+**/.git/
+**/*secret*
+**/credentials/
+**/backups/
+**/models/
+**/data/
+**/.cache/
+**/.venv/

@@ -14,6 +14,16 @@ def quote(value):
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
 
 
+def working_directory(value):
+    # WorkingDirectory recebe um único caminho, não uma lista de palavras.
+    # Aspas externas viram parte literal do caminho no systemd do Debian 12.
+    value = str(value)
+    if (any(char in value for char in "\r\n\0") or value != value.strip()
+            or value.endswith("\\")):
+        raise ValueError("Caminho de trabalho inválido")
+    return value.replace("%", "%%")
+
+
 def existing(value, directory=False):
     path = Path(value).expanduser()
     if not path.is_absolute():
@@ -57,7 +67,7 @@ def main():
         template = (Path(__file__).resolve().parent.parent /
                     "deploy/juvenal-server.service.in").read_text(encoding="utf-8")
         replacements = {
-            "USER": args.user, "PROJECT": quote(project), "PYTHON": quote(python),
+            "USER": args.user, "PROJECT": working_directory(project), "PYTHON": quote(python),
             "MAIN": quote(application), "ENV_FILE": quote("JUVENAL_ENV_FILE=" + str(env_file)),
             "DATA_ENV": quote("JUVENAL_DATA_DIR=" + str(data)),
             "CACHE_ENV": quote("XDG_CACHE_HOME=" + str(cache)),
@@ -68,7 +78,7 @@ def main():
         with output.open("w" if args.replace else "x", encoding="utf-8") as handle:
             handle.write(template)
         print("Unit gerada para revisão:", output)
-        print("Nenhum serviço instalado, habilitado ou iniciado. Confira permissões e catálogo antes de instalar.")
+        print("Nenhum serviço instalado, habilitado ou iniciado. Confira caminhos e permissões antes de instalar.")
     except (OSError, ValueError, KeyError) as error:
         parser.error(str(error))
 
