@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from config import PROJECT_ROOT, settings, esp_settings, number, tts_options, whisper_options
+from config import PROJECT_ROOT, settings, esp_settings, hass_settings, number, tts_options, whisper_options
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -204,15 +204,18 @@ async def lifespan(app):
     if settings.legacy_endpoint:
         logger.warning("Compatibilidade TTS_HA_WEBHOOK_URL ativa: ESP textual, demais entradas locais. "
                        "Migre explicitamente AUDIO_OUTPUT_MODE; nenhum valor secreto será exibido.")
-    # Importações por capacidade: endpoint não importa tts/Piper, player ou pyttsx3.
-    if settings.output_mode in {"local", "esp32"}:
+    # HA direto responde no ESP mesmo quando a conversa geral usa saída endpoint.
+    ha_playback = (hass_settings.availability()[0] and hass_settings.mode == "api"
+                   and bool(settings.esp_token))
+    if settings.output_mode in {"local", "esp32"} or ha_playback:
         try:
             from tts import create_tts_engine
             options = tts_options()
-            if settings.output_mode == "esp32":
+            if settings.output_mode == "esp32" or ha_playback:
                 if options["backend"] != "piper":
                     raise ValueError("esp32_requires_piper")
-                options["output_device"] = None
+                if settings.output_mode != "local":
+                    options["output_device"] = None
             output.engine = await asyncio.to_thread(create_tts_engine, **options)
         except Exception:
             logger.warning("Motor de saída indisponível; veja dependências/modelo. Sem fallback de destino.")
@@ -226,6 +229,9 @@ async def lifespan(app):
     engine = ConversationEngine(llm, output, broadcast, set_state, transcriber, tools=tools)
     esp_transport = ESPTransport(engine, transcriber, admit, return_to_idle)
     capability = await tools.capability()
+    logger.info("Home Assistant: habilitado=%s modo=%s exige_catalogo=%s log_conteudo=%s",
+                hass_settings.enabled, hass_settings.mode, hass_settings.require_catalog,
+                hass_settings.log_content)
     logger.info("Ferramentas: disponíveis=%s motivo=%s",
                 capability["available"], capability["reason"] or "ready")
     try:
@@ -302,7 +308,8 @@ async def health():
             "capabilities": {"text_input": True, "local_voice": settings.local_voice_enabled,
                              "esp_legacy_input": bool(esp_settings.legacy_enabled and settings.esp_token
                                                       and transcriber is not None),
-                             "esp_playback": bool(settings.output_mode == "esp32" and output and output.engine),
+                             "esp_playback": bool(output and output.engine
+                                 and hasattr(output.engine, "synthesize_pcm")),
                              "ws_v1": bool(settings.esp_token and transcriber is not None),
                              "tools": tool_capability}}
 

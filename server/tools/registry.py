@@ -6,6 +6,8 @@ import math
 import re
 from dataclasses import dataclass, field
 
+from config import settings
+
 
 class ArgumentError(ValueError):
     pass
@@ -125,7 +127,7 @@ class ToolRegistry:
                     or result.status not in {"success", "denied", "needs_confirmation", "failed", "unknown"}
                     or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", result.code)
                     or not isinstance(result.message, str)
-                    or len(result.message.encode("utf-8")) > 1024 or type(result.data) is not dict
+                    or len(result.message.encode("utf-8")) > settings.text_bytes or type(result.data) is not dict
                     or len(json.dumps(result.data, allow_nan=False).encode("utf-8")) > 4096):
                 return ToolResult("unknown", "tool_result_invalid",
                                   "O resultado não pôde ser validado. Não vou repetir a ação.")

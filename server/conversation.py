@@ -53,6 +53,9 @@ class Interaction:
     offered_automations: set = field(default_factory=set)
     catalog_revision: str = ""
     esp_link: object = None
+    hass_delivery: str = ""
+    hass_external_accepted: bool = False
+    hass_http_status: int | None = None
 
     @property
     def remaining(self):
@@ -135,7 +138,8 @@ class ConversationEngine:
         await self.event(session, "assistant_start")
         await self.event(session, "assistant_token", token=text)
         await self.event(session, "assistant_end", status="complete")
-        await self.set_state("speaking")
+        if session.hass_delivery != "external":
+            await self.set_state("speaking")
         result = await self.output.deliver_response(text, session)
         await self.event(session, "delivery_result", status=result.status,
                          mode=result.mode, error=result.error, http_status=result.http_status)
@@ -159,6 +163,9 @@ class ConversationEngine:
         if session.esp_link is None:
             session.turn_id = uuid4().hex
         session.tool_results.clear()
+        session.hass_delivery = ""
+        session.hass_external_accepted = False
+        session.hass_http_status = None
         started = time.monotonic()
         if settings.log_transcripts:
             label = "Entrada textual" if session.origin == "web" else "Transcrição reconhecida"
@@ -203,7 +210,8 @@ class ConversationEngine:
         logger.info("Turno %s: resposta concluída em %d ms", session.turn_id,
                     int((time.monotonic() - started) * 1000))
         await self.event(session, "assistant_end", status="complete")
-        await self.set_state("speaking")
+        if session.hass_delivery != "external":
+            await self.set_state("speaking")
         delivery_started = time.monotonic()
         try:
             delivery = await self.output.deliver_response(response, session)
@@ -304,6 +312,12 @@ class ConversationEngine:
             call_count += len(calls)
             call_ids.update(call.call_id for call in calls)
             results = await self._batch(calls, session, trace)
+            if session.hass_delivery:
+                # HA já produziu a fala, ou assumiu a fala remota. Não chamar
+                # o LLM novamente para reescrever/confirmar/reexecutar a ação.
+                response = "\n".join(item.message for item in results)
+                await self.event(session, "assistant_token", token=response)
+                return response
             for call, result in zip(calls, results):
                 if result.status == "success":
                     label = call.arguments.get("automation_id", call.name)

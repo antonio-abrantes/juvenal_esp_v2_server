@@ -6,11 +6,11 @@ Este componente usa repositório próprio: **`juvenal_esp_v2_server`**, associad
 
 ## Estado do projeto
 
-A fase 01 está encerrada no escopo de núcleo e saídas configuráveis, com validação manual parcial no Windows. O usuário comprovou detecção da wake word, captura/transcrição, resposta do LLM, recebimento de texto no webhook com HTTP 200 e retorno à escuta, inclusive após falha HTTP. A transcrição voltou a aparecer no terminal quando habilitada.
+**Etapa Home Assistant e persona concluída em 14/11/2026**, por aceite do usuário após informar que a integração passou a funcionar. A entrega inclui dois modos HA, comandos sem cadastro obrigatório, logs de POST e persona breve com interpretação de transcrição imperfeita. O aceite não comprova individualmente todos os modos e cenários de falha; as verificações complementares ficam no [guia HA](docs/home-assistant.md).
 
-A fase 02 entrega ferramentas estruturadas e catálogo de automações Home Assistant/n8n com edição autenticada pelo painel. A fase foi encerrada após o aceite manual informado pelo usuário para o painel, catálogo e conversa. A execução real de ações ainda depende da confirmação do provedor/modelo e do contrato do workflow. A fase 03 acrescenta WS v1 por interação, entrada PCM/VAD, síntese PCM de retorno com controle de fluxo e confirmação de reprodução. O usuário forneceu cinco sessões com playback confirmado no hardware antes da extensão de continuidade. A nova conversa de vários turnos ainda exige atualização inicial e avaliação física. `/ws/esp` é v1; o legado foi movido para `/ws/esp/legacy`, desligado por padrão e autenticado.
+O núcleo de conversa e a entrada ESP por WebSocket já têm evidências de STT/IA, playback e continuidade. LEDs de inicialização e boca por amplitude foram aprovados no hardware. A operação Linux/systemd e outras verificações específicas continuam pendentes, separadas desta etapa.
 
-O firmware experimental **Juvenal Visual v0.4**, no projeto separado `juvenal_http_teste`, continua usando MicroWakeWord, gravação WAV PCM16 e HTTP POST. Ele não utiliza este transporte. O cliente integrado foi implementado no firmware principal `juvenal_esp`, com ESP-IDF **5.4.4**, reaproveitando seletivamente face, painel e diagnóstico WAV/POST. Os turnos individuais já executaram na placa; a extensão posterior de continuidade precisa de novo build/flash inicial e avaliação do usuário.
+O firmware experimental **Juvenal Visual v0.4**, em juvenal_http_teste, permanece WAV/HTTP POST. O cliente integrado está no principal juvenal_esp, com ESP-IDF **5.4.4**, face, painel e diagnóstico WAV preservados. A integração HA é executada no servidor e não exige nova alteração de firmware.
 
 ## Como a conversa funciona
 
@@ -23,7 +23,7 @@ As integrações têm responsabilidades distintas:
 | `LLM_PROVIDER` e variáveis do provedor | Gerar a resposta da IA; suporta OpenAI, Ollama, Groq, servidor compatível e webhook conversacional |
 | `WEBHOOK_URL` / `WEBHOOK_API_KEY` | Provedor alternativo, ativo somente com `LLM_PROVIDER=webhook`; contrato `message` → `response` |
 | `AUDIO_TEXT_ENDPOINT_URL` | Receber a resposta final já produzida; ativo com `AUDIO_OUTPUT_MODE=endpoint` |
-| Ferramenta HA/n8n | Executar ações do catálogo, com permissões, confirmação e configuração `HA_AUTOMATION_*` própria |
+| Ferramenta Home Assistant | Encaminhar comandos residenciais à IA do HA com configuração `HASS_*`; catálogo opcional, API com fala no ESP ou endpoint com fala remota |
 
 Com OpenAI como provedor e saída `endpoint`, a resposta é gerada pela OpenAI e depois enviada ao webhook. O corpo devolvido por esse webhook pode ser registrado para diagnóstico; não é interpretado como nova resposta da IA, ferramenta ou áudio.
 
@@ -32,7 +32,7 @@ Com OpenAI como provedor e saída `endpoint`, a resposta é gerada pela OpenAI e
 | `AUDIO_OUTPUT_MODE` | Comportamento |
 |---|---|
 | `local` | Sintetiza com Piper e reproduz no dispositivo de áudio do servidor |
-| `endpoint` | Envia uma tentativa de POST por resposta final; não carrega nem executa TTS |
+| `endpoint` | Entrega a resposta comum por POST; ações HA seguem a política de áudio específica abaixo |
 | `esp32` | Piper → PCM16 mono 16 kHz → WS v1; conclui após confirmação do TX pelo ESP. Exige cliente com playback habilitado e montagem apta |
 
 No modo `endpoint`, o formato padrão é JSON `{"texto": "resposta final da IA"}`; há opção de texto puro. Status aceito confirma entrega HTTP conforme a configuração, sem confirmar reprodução de fala. Não há reenvio ou mudança automática de destino após falha.
@@ -61,7 +61,7 @@ Linux:
 [ -f configs/system_prompt.md ] || (umask 077; cp configs/system_prompt.example.md configs/system_prompt.md)
 ~~~
 
-Edite o `.env` local com seu provedor, credenciais e capacidades. Para reproduzir o fluxo atual de microfone local e entrega de texto:
+Edite o `.env` local com seu provedor, credenciais e capacidades. Para um diagnóstico com microfone local e entrega de texto:
 
 ~~~dotenv
 LLM_PROVIDER=openai
@@ -94,7 +94,7 @@ bash scripts/start.sh
 
 O instalador preserva o `.env` existente e não inicia a aplicação ou outros serviços. O perfil `auto` escolhe dependências conforme a configuração; perfis explícitos `text`, `endpoint`, `local` e `esp32` escolhem pacotes e não alteram o `.env`. O perfil `endpoint` é para áudio recebido sem captura local; para wake/microfone no host, use `auto` com as opções acima.
 
-Whisper e Piper podem baixar modelos ao iniciar a capacidade correspondente. No modo `endpoint`, Piper não é carregado. Detalhes: [configuração](docs/configuration.md) e [preparação Linux](docs/homelab-linux-setup.md).
+Whisper e Piper podem baixar modelos ao iniciar a capacidade correspondente. A saída endpoint comum dispensa Piper; a API HA com resposta no ESP precisa dele, mesmo quando a saída geral é endpoint. Detalhes: [configuração](docs/configuration.md) e [preparação Linux](docs/homelab-linux-setup.md).
 
 ## Alteração do destino
 
@@ -120,21 +120,28 @@ O modelo que reconhece a palavra **“Juvenal”**, identificado nos arquivos co
 
 Esse modelo reconhece a palavra de ativação. A transcrição da fala seguinte é responsabilidade do Whisper; a resposta conversacional vem do provedor configurado. O treinamento não é executado pelo Juvenal Server. Preserve os avisos e licenças aplicáveis aos modelos e componentes utilizados.
 
-## Automações e ferramentas
+## Home Assistant
 
-O botão **Automações** abre o cadastro no painel. Configure `PANEL_USERNAME` e `PANEL_PASSWORD` no `.env` e reinicie: administrar o catálogo exige autenticação mesmo no computador local. É possível cadastrar, editar, habilitar, desabilitar e remover entradas; salvar não executa ações.
+A integração é opcional e roda no Python: Juvenal encaminha o comando residencial à IA do Home Assistant, que interpreta e executa. **Não é necessário cadastrar ações** no padrão HASS_REQUIRE_CATALOG=false. Pedidos claros seguem diretamente; dúvidas relevantes da transcrição são esclarecidas antes do envio.
 
-O arquivo `data/automacoes.md` é criado no primeiro salvamento, sob `JUVENAL_DATA_DIR`, e fica fora do Git. O backend valida ações, entidades, parâmetros e identidades permitidas. Edições concorrentes geram conflito; uma edição inválida bloqueia ações. A revisão anterior é preservada em `automacoes.md.previous`.
+| HASS_MODE | Execução e resposta |
+|---|---|
+| api — padrão | POST em /api/conversation/process com Bearer e agente configurável. O speech retornado é sintetizado e reproduzido no ESP de origem, sem reescrita por outro LLM |
+| text_endpoint | Envia comando ao receptor configurado, que executa e fala remotamente. Essa ação não produz TTS no ESP, mesmo com AUDIO_OUTPUT_MODE=esp32 |
 
-As ferramentas têm padrão `TOOLS_ENABLED=false`. Para ativar, confirme explicitamente o suporte estruturado da combinação provedor/modelo/adaptador e o contrato textual separado do n8n. Não reutilize automaticamente o webhook de saída ou de WAV. Veja [configuração das ferramentas](docs/configuration.md#ferramentas-e-catálogo--fase-02).
+HASS_ENABLED liga/desliga o módulo; HASS_API_ENDPOINT, HASS_API_TOKEN e HASS_AGENT_ID configuram a API. No modo alternativo, use HASS_TEXT_ENDPOINT_URL e o campo JSON HASS_TEXT_ENDPOINT_FIELD. Os dados ficam no .env privado do servidor; alterar modo exige apenas reiniciar Python, sem regravar o ESP. HASS_* é independente de AUDIO_TEXT_ENDPOINT_URL, que entrega respostas comuns.
 
-Confirmações expiram e valem somente para os parâmetros, identidade e revisão apresentados. Em saída `endpoint`, confirme numa nova ativação da wake word. Cancelamento não desfaz um envio externo; resultado incerto não provoca repetição.
+TOOLS_ENABLED e a configuração estruturada do provedor/modelo precisam estar habilitados. Logs mostram início, HTTP, duração e resultado do POST; HASS_LOG_CONTENT acrescenta conteúdo limitado e sanitizado. Não há reenvio automático de ações com resultado incerto.
+
+O catálogo do botão Automações permanece disponível com HASS_REQUIRE_CATALOG=true. Administrá-lo exige PANEL_USERNAME/PANEL_PASSWORD; data/automacoes.md é privado. Veja [configuração completa, alternância e verificações](docs/home-assistant.md).
+
+A persona personalizável prioriza respostas curtas, recusa textos deliberadamente longos e interpreta erros claros de transcrição pelo contexto. Quando faltar clareza, faz uma pergunta breve. Consulte [personalização](docs/configuration.md#personalizar-a-persona).
 
 ## Próximas entregas e validação
 
-A fase 03 entrega a implementação do protocolo e do firmware; a aceitação integrada depende do usuário. Comece por entrada ESP + saída endpoint, com `ESP_DEVICE_ID`/`ESP_DEVICE_TOKEN` iguais no `.env` e no header privado do ESP, `STT_ENABLED=true` e servidor acessível na LAN. `LOCAL_VOICE_ENABLED=false` desliga somente o microfone do computador; na configuração local existente ele foi mantido ligado até a migração ser avaliada. Não exponha token em URL. O firmware experimental WAV não passa a usar WS apenas por atualizar o servidor. A validação real das ferramentas e do workflow n8n permanece pendente.
+O ESP principal já forneceu áudio e recebeu respostas em sessões reais; a continuidade também foi informada como funcionando. No ambiente atual, entrada vem do ESP e AUDIO_OUTPUT_MODE=esp32; LOCAL_VOICE_ENABLED=false desliga somente o microfone do computador. ESP_DEVICE_ID/ESP_DEVICE_TOKEN devem corresponder nos dois projetos. Não exponha token em URL. O experimental WAV permanece separado. A etapa Home Assistant/persona foi encerrada por aceite do usuário; os cenários complementares estão separados no [guia dos dois modos](docs/home-assistant.md).
 
-Permanecem sem comprovação nesta entrega: conectividade após o último ajuste da URL local, log do corpo devolvido pelo webhook, reprodução local nesta versão, todos os cenários de limites/cancelamento, execução Linux/systemd e áudio no ESP32. O recebimento HTTP 200 anterior continua sendo uma evidência válida de entrega textual.
+Não foram individualmente comprovados o modo HA alternativo, alternância/desativação e todos os erros; esses cenários continuam como verificações complementares. Volume/persistência nas condições não relatadas, limites/cancelamento e operação Linux/systemd permanecem pendências próprias. Os recebimentos HTTP 200 anteriores e os playback confirmados no ESP continuam evidências das integrações correspondentes.
 
 A validação funcional é manual, pelo usuário. Não há suíte automatizada de testes ou implantação automática nesta entrega.
 
@@ -150,4 +157,4 @@ O ESP informa quando está pronto para escutar e quando a fala começa. O prazo 
 
 É necessária uma atualização inicial coordenada dos dois projetos para os novos eventos. Depois dela, alterar10 para20 nessa variável e reiniciar o Python é suficiente, mantendo o firmware instalado. As antigas ESP_CONTINUATION_SECONDS/ESP_FIRST_SPEECH_SECONDS não controlam mais o v1; não há timeout ocioso duplicado no ESP. Veja o [contrato e a configuração](docs/esp32-websocket-mic.md).
 
-A continuidade nova teve validação específica isolada do servidor; execução com o ESP físico atualizado ainda precisa de conferência. Logs anteriores comprovam os turnos individuais e o usuário aprovou LED/boca, não esta alteração posterior.
+O usuário informou que a continuidade passou a funcionar após a atualização dos dois projetos. A alteração 10 para 20 s também teve conferência específica isolada do servidor. LEDs e boca foram aprovados no hardware, e o usuário posteriormente informou funcionamento da integração Home Assistant. O encerramento da etapa preserva as verificações específicas ainda não relatadas.

@@ -58,6 +58,10 @@ SYSTEM_PROMPT_PATH aponta por padrão para configs/system_prompt.md. O classific
 
 ### Personalizar a persona
 
+O padrão atual prioriza respostas faladas de uma a três frases, buscando até 60 palavras e com orientação de não ultrapassar 80. Pedidos deliberados de textos muito longos recebem uma recusa breve baseada nas diretrizes e, quando útil, um resumo. Ajuste essas orientações nas seções Brevidade obrigatória e Entender a fala mesmo com transcrição imperfeita do prompt pessoal.
+
+Para erros de STT, a persona usa contexto/fonética, corrige mentalmente quando o sentido é claro e faz uma pergunta curta quando falta um detalhe. Não repete a transcrição defeituosa como resposta nem inventa dispositivo/ação/negação/valor. Comandos residenciais claros continuam diretos; dúvida que possa mudar a ação exige esclarecimento antes da ferramenta. Isso é uma orientação do modelo, sem corte artificial da resposta, troca do Whisper ou garantia de recuperação de áudio perdido. O speech recebido do Home Assistant continua autoritativo, sem reescrita por outro LLM.
+
 Edite configs/system_prompt.md, arquivo pessoal ignorado pelo Git. A seção Ficha da persona concentra nome, papel, personalidade, tom, humor e tamanho das respostas. As seções Administradores e pessoas da casa e Preferências adicionais guardam os dados familiares e preferências locais; não copie esses dados para o exemplo público.
 
 O nome padrão é Juvenal, agente inteligente e assistente pessoal. A grafia juvehnal dos arquivos de wake word não define o nome falado do personagem. O exemplo configs/system_prompt.example.md contém uma personalidade inicial e campos genéricos para os administradores.
@@ -118,17 +122,18 @@ A conversa e a entrega textual continuam disponíveis com ferramentas desativada
 | `LLM_TOOL_CALLING_CONFIRMED` | `false`; confirmação deliberada de suporte estruturado |
 | `LLM_TOOL_CALLING_PROVIDER` / `LLM_TOOL_CALLING_MODEL` | Devem corresponder exatamente ao provedor/modelo em uso |
 | `LLM_TOOL_CALLING_ADAPTER` | `openai-chat-completions`; nenhum suporte presumido apenas pela URL |
-| `HA_AUTOMATION_URL` | Receptor de comandos textuais; vazio, independente de LLM e saída |
-| `HA_AUTOMATION_API_KEY` / `AUTH_HEADER` / `AUTH_PREFIX` | Usar o prefixo completo `HA_AUTOMATION_` nas três variáveis; só enviar a credencial quando configurada e exigida pelo contrato |
-| `HA_AUTOMATION_CONTRACT` / `HA_AUTOMATION_CONTRACT_CONFIRMED` | Vazio / `false`; adaptador proposto `text-command-v1`, ainda sem comprovação do workflow real |
+| `HASS_ENABLED` / `HASS_MODE` | Módulo Home Assistant: true / api por padrão; alternativa text_endpoint |
+| `HASS_API_ENDPOINT` / `HASS_API_TOKEN` / `HASS_AGENT_ID` | API conversacional e agente, mantidos somente no servidor |
+| `HASS_TEXT_ENDPOINT_*` | Receptor textual alternativo, campo JSON e autenticação próprios |
+| `HASS_REQUEST_TIMEOUT_SECONDS` | 30 s por ação HA; máximo 120 s, limitado pelo turno |
 | `TOOL_TIMEOUT_SECONDS` | 15 s, teto de 15 s por chamada |
 | `TOOL_CONFIRMATION_TTL_SECONDS` | 60 s; máximo 300 s |
 | `TOOL_MAX_ROUNDS` / `TOOL_MAX_CALLS` | Até 3 rodadas com ferramentas e 4 chamadas por turno; envio serial |
 | `AUTOMATION_CATALOG_MAX_BYTES` / `MAX_ENTRIES` | Usar `AUTOMATION_CATALOG_` nas duas variáveis; 262144 bytes / 200 entradas |
 
-Não habilite as confirmações de capacidade/contrato por tentativa. Webhook conversacional não fornece chamadas Python estruturadas; sua conversa permanece disponível, com a limitação informada na instrução enviada ao provedor. Provedores OpenAI-compatible só recebem ferramentas se a combinação confirmada corresponder à configuração ativa. Não há extração de comando a partir de texto livre ou JSON aparente de uma resposta normal.
+Não habilite a confirmação de capacidade do provedor por tentativa. Webhook conversacional não fornece chamadas Python estruturadas; sua conversa permanece disponível, com a limitação informada na instrução enviada ao provedor. Provedores OpenAI-compatible só recebem ferramentas se a combinação confirmada corresponder à configuração ativa. Não há extração de comando a partir de texto livre ou JSON aparente de uma resposta normal.
 
-O adaptador `text-command-v1` é uma implementação opt-in da proposta textual do projeto, não uma confirmação de compatibilidade com o workflow atual. Antes de ativar, alinhe os campos de comando, autenticação e resposta com esse workflow. Não envie esse formato ao webhook WAV sem adaptar e confirmar uma entrada textual separada.
+A integração atual substitui a proposta text-command-v1 por dois modos: HASS_MODE=api recebe a fala do Home Assistant e a reproduz no ESP; HASS_MODE=text_endpoint delega execução e áudio ao receptor, sem TTS no ESP. HASS_ENABLED=false desativa o módulo e a instrução do agente informa o motivo. Por padrão, HASS_REQUIRE_CATALOG=false encaminha o comando para interpretação pela IA do Home Assistant sem cadastro de ações. Catálogo e permissões por ação só são exigidos com HASS_REQUIRE_CATALOG=true. As antigas variáveis HA_AUTOMATION_* não são mais usadas para ações. Veja [configuração, payloads e alternância](home-assistant.md).
 
 ### Persistência e campos do catálogo
 

@@ -3,7 +3,7 @@
 import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -207,12 +207,6 @@ class ToolSettings:
     provider: str = ""
     model: str = ""
     adapter: str = "openai-chat-completions"
-    endpoint_url: str = ""
-    endpoint_key: str = ""
-    auth_header: str = ""
-    auth_prefix: str = ""
-    contract: str = ""
-    contract_confirmed: bool = False
     timeout: float = 15
     confirmation_ttl: float = 60
     max_rounds: int = 3
@@ -224,26 +218,12 @@ class ToolSettings:
     @classmethod
     def from_environment(cls):
         try:
-            url = os.getenv("HA_AUTOMATION_URL", "").strip()
-            key = os.getenv("HA_AUTOMATION_API_KEY", "")
-            header = os.getenv("HA_AUTOMATION_AUTH_HEADER", "").strip()
-            prefix = os.getenv("HA_AUTOMATION_AUTH_PREFIX", "")
-            if url:
-                validate_url(url, "HA_AUTOMATION_URL")
-            if (header and not re.fullmatch(r"[!#$%&'*+.^_\x60|~0-9A-Za-z-]+", header)
-                    or any(c in key + prefix for c in "\r\n")
-                    or key and not header
-                    or header.lower() in {"host", "content-type", "content-length", "transfer-encoding"}):
-                raise ValueError()
             return cls(
                 enabled=flag("TOOLS_ENABLED"),
                 provider_confirmed=flag("LLM_TOOL_CALLING_CONFIRMED"),
                 provider=os.getenv("LLM_TOOL_CALLING_PROVIDER", "").strip().lower(),
                 model=os.getenv("LLM_TOOL_CALLING_MODEL", "").strip(),
                 adapter=os.getenv("LLM_TOOL_CALLING_ADAPTER", "openai-chat-completions").strip(),
-                endpoint_url=url, endpoint_key=key, auth_header=header, auth_prefix=prefix,
-                contract=os.getenv("HA_AUTOMATION_CONTRACT", "").strip(),
-                contract_confirmed=flag("HA_AUTOMATION_CONTRACT_CONFIRMED"),
                 timeout=number("TOOL_TIMEOUT_SECONDS", 15, 15),
                 confirmation_ttl=number("TOOL_CONFIRMATION_TTL_SECONDS", 60, 300),
                 max_rounds=integer("TOOL_MAX_ROUNDS", 3, 3),
@@ -256,6 +236,85 @@ class ToolSettings:
 
 
 tool_settings = ToolSettings.from_environment()
+
+
+@dataclass(frozen=True)
+class HomeAssistantSettings:
+    enabled: bool = True
+    mode: str = "api"
+    api_endpoint: str = ""
+    api_token: str = field(default="", repr=False)
+    agent_id: str = "conversation.extended_openai_conversation_2"
+    text_endpoint: str = ""
+    text_field: str = "mensagem"
+    text_key: str = field(default="", repr=False)
+    text_auth_header: str = ""
+    text_auth_prefix: str = ""
+    timeout: float = 30
+    log_content: bool = False
+    require_catalog: bool = False
+    error: str = ""
+
+    @classmethod
+    def from_environment(cls):
+        enabled = True
+        mode = "api"
+        try:
+            enabled = flag("HASS_ENABLED", True)
+            mode = os.getenv("HASS_MODE", "api").strip().lower()
+            if mode not in {"api", "text_endpoint"}:
+                raise ValueError()
+            api = os.getenv("HASS_API_ENDPOINT", "").strip().rstrip("/")
+            token = os.getenv("HASS_API_TOKEN", "").strip()
+            agent = os.getenv("HASS_AGENT_ID", "conversation.extended_openai_conversation_2").strip()
+            url = os.getenv("HASS_TEXT_ENDPOINT_URL", "").strip()
+            field = os.getenv("HASS_TEXT_ENDPOINT_FIELD", "mensagem").strip()
+            key = os.getenv("HASS_TEXT_ENDPOINT_API_KEY", "")
+            header = os.getenv("HASS_TEXT_ENDPOINT_AUTH_HEADER", "").strip()
+            prefix = os.getenv("HASS_TEXT_ENDPOINT_AUTH_PREFIX", "")
+            if enabled and mode == "api":
+                if api:
+                    validate_url(api, "HASS_API_ENDPOINT")
+                    # Aceitar raiz ou rota completa; nunca duplicar o sufixo.
+                    parsed = urlsplit(api)
+                    if parsed.path not in {"", "/api/conversation/process"} or parsed.query or parsed.fragment:
+                        raise ValueError()
+                if (any(c in token for c in "\r\n") or not re.fullmatch(
+                        r"conversation\.[A-Za-z0-9_]{1,128}", agent)):
+                    raise ValueError()
+            if enabled and mode == "text_endpoint":
+                if url:
+                    validate_url(url, "HASS_TEXT_ENDPOINT_URL")
+                if (not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", field)
+                        or header and not re.fullmatch(r"[!#$%&'*+.^_\x60|~0-9A-Za-z-]+", header)
+                        or any(c in key + prefix for c in "\r\n") or key and not header
+                        or header.lower() in {"host", "content-type", "content-length", "transfer-encoding"}):
+                    raise ValueError()
+            return cls(enabled, mode, api, token, agent, url, field, key, header, prefix,
+                       number("HASS_REQUEST_TIMEOUT_SECONDS", 30, 120, .1),
+                       flag("HASS_LOG_CONTENT", False),
+                       flag("HASS_REQUIRE_CATALOG", False))
+        except ValueError:
+            return cls(enabled=enabled, mode=mode, error="hass_configuration_invalid")
+
+    def availability(self):
+        if not self.enabled:
+            return False, "hass_disabled"
+        if self.error:
+            return False, self.error
+        if self.mode == "api" and not (self.api_endpoint and self.api_token):
+            return False, "hass_api_configuration_missing"
+        if self.mode == "text_endpoint" and not self.text_endpoint:
+            return False, "hass_text_endpoint_missing"
+        return True, ""
+
+    @property
+    def conversation_url(self):
+        suffix = "/api/conversation/process"
+        return self.api_endpoint if self.api_endpoint.endswith(suffix) else self.api_endpoint + suffix
+
+
+hass_settings = HomeAssistantSettings.from_environment()
 
 
 @dataclass(frozen=True)

@@ -107,6 +107,16 @@ class ResponseOutput:
     async def deliver_response(self, text, session):
         mode = self.mode_for(session)
         session.check()
+        if session.hass_delivery == "external":
+            # O POST já ocorreu na ferramenta. Nunca enviar de novo nem produzir
+            # áudio local/ESP, inclusive se o resultado do receptor for incerto.
+            return DeliveryResult(
+                "accepted" if session.hass_external_accepted else "failed",
+                "hass_text_endpoint",
+                "" if session.hass_external_accepted else "hass_external_unconfirmed",
+                session.hass_http_status)
+        if session.hass_delivery == "api" and session.esp_link is not None:
+            mode = "esp32"
         if not isinstance(text, str) or not text.strip() or len(text.encode("utf-8")) > settings.text_bytes:
             return DeliveryResult("failed", mode, "invalid_response_text")
         attempt = {}
