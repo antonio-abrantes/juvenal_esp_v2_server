@@ -1,197 +1,89 @@
-# ESP32-S3 como Microfone via WebSocket
+# ESP32-S3 — integração WebSocket v1
 
-Guia para usar o ESP32-S3 como interface de microfone wireless para o servidor Juvehnal, substituindo o microfone USB local por um dispositivo I2S conectado via WebSocket na rede local.
+Implementação da fase 03 em ESP-IDF 5.4.4 e no Juvenal Server. Cinco sessões anteriores com playback confirmado foram fornecidas pelo usuário; LEDs de boot e boca também foram aprovados. A continuidade descrita nesta revisão é posterior e ainda requer atualização inicial/aceite na placa. O cliente é o firmware principal juvenal_esp; o experimental juvenal_http_teste Visual v0.4 permanece WAV/POST.
 
----
+## Configuração inicial: ESP recebe voz e servidor entrega texto
 
-## Visão Geral
+No .env do servidor: AUDIO_OUTPUT_MODE=endpoint, STT_ENABLED=true, ESP_DEVICE_ID e ESP_DEVICE_TOKEN preenchidos. Preserve o provedor de IA e AUDIO_TEXT_ENDPOINT_URL existentes. LOCAL_VOICE_ENABLED=false dispensa microfone/wake do computador; mantenha true enquanto ainda precisar do diagnóstico local. Reinicie manualmente após editar.
 
-```
-INMP441 (I2S) → ESP32-S3 → Wi-Fi → WebSocket /ws/esp → Servidor Python
-                                                              ↓
-                                               faster-whisper (ASR) → LLM → TTS
-```
+No header privado main/juvenal_secrets.h do firmware, use JUVENAL_AUTO_TRANSPORT_WS=true, JUVENAL_WS_URL=ws://IP_DO_SERVIDOR:8000/ws/esp e a mesma identidade/credencial em JUVENAL_WS_DEVICE_ID/TOKEN. Defina Wi-Fi. Token não vai na URL nem no painel. Um exemplo público sem segredos acompanha o firmware.
 
-O ESP32-S3 lê áudio do microfone INMP441 via I2S, detecta atividade de voz localmente (energia RMS simples) e envia a palavra de ativação ao servidor via WebSocket. O servidor responde pedindo o stream de áudio, que o ESP32 envia como frames binários PCM int16 a 16kHz. O servidor transcreve com faster-whisper e segue o pipeline normal.
+Não usar 127.0.0.1/localhost no ESP: esses endereços apontam para o próprio dispositivo. IP, firewall e porta precisam permitir acesso pela LAN. WS sem TLS requer rede privada protegida; para WSS, o firmware valida certificado com o bundle e exige relógio sincronizado por SNTP.
 
----
+O modelo MicroWakeWord continua no ESP; o servidor não precisa desse modelo nem de placa de som quando LOCAL_VOICE_ENABLED=false. Whisper continua necessário para a fala recebida.
 
-## Hardware
+## Sessão e envelope
 
-| Componente     | Modelo                  | Notas                            |
-|---------------|-------------------------|----------------------------------|
-| Microcontrolador | ESP32-S3 DevKitC-1   | PSRAM octal 80MHz recomendado    |
-| Microfone     | INMP441                 | I2S digital, omnidirecional      |
+A rota do dispositivo é /ws/esp. O /ws do painel é observador e usa outro contrato. Bearer obrigatório no handshake; session.start precisa chegar no prazo configurado.
 
-### Pinagem
+~~~json
+{"protocol_version":1,"event":"session.start","payload":{"device_id":"juvenal","playback":false,"playback_buffer_bytes":16384,"conversation_events":true}}
+~~~
 
-| INMP441 | ESP32-S3 GPIO | Função         |
-|---------|--------------|----------------|
-| SD      | GPIO 10      | I2S Data In    |
-| WS      | GPIO 11      | I2S LR Clock   |
-| SCK     | GPIO 12      | I2S Bit Clock  |
-| VDD     | 3.3V         |                |
-| GND     | GND          |                |
-| L/R     | GND          | Seleciona canal esquerdo |
+O servidor responde session.ready com session_id e turn_id, ambos novos, e payload com sample_rate=16000, channels=1, sample_format=s16le, output_mode, vad_start_rms, conversation_events=true e continuation. session_id permanece na conversa; turn_id muda a cada nova escuta. Mensagens seguintes incluem ambos os IDs. input.start informa exatamente os três campos de formato. Entrada binária é PCM bruto, sem WAV/base64, em quadros pares até 4096 bytes; o cliente envia nominalmente 640 bytes.
 
-> **Nota**: L/R do INMP441 ligado ao GND coloca o microfone no canal esquerdo (I2S_STD_SLOT_LEFT), conforme configuração no código.
+| Evento | Direção | Regra |
+|---|---|---|
+| input.start / PCM / input.end | ESP → servidor | Stream de entrada; fim inclui reason e total_samples efetivamente enviados |
+| input.ready | ESP → servidor | Payload vazio; captura compartilhada pronta para ouvir. Arma a inatividade no Python |
+| input.speech_started | ESP → servidor | Payload vazio; primeiro bloco elegível no RMS enviado pelo servidor. Cancela a inatividade imediatamente; VAD confirma fala no PCM |
+| input.stop | Servidor → ESP | Parar entrada por vad_silence, conversation_idle_timeout ou no_speech; responder input.end com o motivo correspondente |
+| assistant.state | Servidor → ESP | Estado de processamento |
+| transcript / assistant.response | Servidor → ESP | Prévia textual limitada; resposta é display_only, sem disparar outro áudio/POST |
+| output.start / PCM / output.end | Servidor → ESP | Apenas saída esp32; formato fixo, blocos e totais |
+| playback.credit | ESP → servidor | consumed_bytes cumulativo, par, nunca maior que os bytes enviados |
+| playback.finished | ESP → servidor | total_bytes e total_samples iguais aos enviados, depois de output.end e do TX drenado |
+| session.cancel | ESP → servidor | Interrompe sessão; não desfaz ação externa já enviada |
+| session.error / session.end | Servidor → ESP | Falha/resultado terminal e fechamento; sem replay |
 
----
+input.end aceita complete, client_vad, server_vad, no_speech ou conversation_idle_timeout. capture_limit e outros motivos forçados abortam; não processar comando cortado. O ESP transmite continuamente por um ring reutilizável na área compartilhada com o diagnóstico WAV. Seu tamanho não é duração máxima de fala; seis segundos limitam somente a gravação WAV manual/legada. O servidor determina o fim normal pelo VAD e mantém ESP_MAX_INPUT_SECONDS (default30s a partir do início da fala) como proteção configurável; silencio aguardando pergunta usa apenas pré-buffer limitado a500ms, sem consumir esse prazo; nunca executar comando cortado ao atingir limite.
 
-## Configuração do Arduino IDE
+VAD usa amostras PCM, não intervalo entre pacotes: três quadros de 20 ms acima do RMS inicial, seguidos de silêncio configurado (1,8 s padrão). Ganho 1,6× e HPF 80 Hz são aplicados uma vez no worker do ESP; MicroWakeWord recebe áudio original. Overflow ou demora em respeitar input.stop terminam com erro.
 
-### 1. Placa
+## Entrega e contexto
 
-- Instale o pacote **ESP32** da Espressif via Boards Manager
-- Versão mínima: **3.0.0** (necessária para `driver/i2s_std.h`)
-- Selecione: `Tools → Board → ESP32S3 Dev Module`
-- Configurações recomendadas:
-  - `PSRAM`: OPI PSRAM
-  - `CPU Frequency`: 240MHz
-  - `Flash Mode`: QIO 80MHz
-  - `Partition Scheme`: Default 4MB with spiffs
+Cada turno completa a entrega antes de reabrir a escuta: endpoint aguarda aceite HTTP (sem afirmar fala externa terminada), local aguarda player e esp32 aguarda ACK após DMA. Falha encerra com erro e não provoca replay/fallback. Uma entrega bem-sucedida permite nova pergunta sem outra wake, na mesma conexão.
 
-### 2. Bibliotecas necessárias
+A identidade autenticada esp:ID mantém contexto dentro do TTL entre sockets. session_id não é identidade permanente. Nova wake abre nova conexão; em espera WS fechado. Queda não dispara reconexão, ação ou resposta automática. Trabalho síncrono residual permanece ocupado até terminar.
 
-Instale via **Library Manager** (`Tools → Manage Libraries`):
+### Inatividade conversacional exclusivamente no servidor
 
-| Biblioteca          | Autor / Repositório            | Versão mínima |
-|--------------------|-------------------------------|---------------|
-| WebSockets_Generic | khoih-prog/WebSockets_Generic | 2.16.1        |
-| ArduinoJson        | bblanchon/ArduinoJson         | 7.x           |
+CONVERSATION_IDLE_TIMEOUT_SECONDS=10 controla a espera ociosa, inclusive a primeira pergunta após wake. O ESP envia input.start e input.ready quando estiver pronto para escutar; só input.ready inicia a contagem. Nova fala envia input.speech_started e cancela o prazo. O VAD de PCM também confirma a transição. Durante captura da fala, STT, ferramentas, entrega/TTS e espera do ACK não existe contagem ociosa.
 
-> `driver/i2s_std.h` já está incluída no ESP32 Arduino Core — não precisa instalar separadamente.
+Depois de concluir a resposta, o Python envia outro session.ready com novo turn_id; o ESP limpa o ring anterior, retoma escuta e envia novo input.ready. Começa uma contagem inteira nova. A captura I2S permanece compartilhada e ativa; transmitir silêncio em escuta não equivale a capturar um enunciado em andamento.
 
----
+Ao expirar, input.stop interrompe a entrada e aguarda input.end; em seguida session.end(result=inactivity) e fechamento ordenado. Não sintetiza IDLE_MESSAGE antes de fechar esse WS. Despedida confirmada, cancelamento e falha também encerram. CONVERSATION_TIMEOUT/IDLE_MESSAGE continuam disponíveis nos fluxos locais/legados.
 
-## Arquivo do Projeto
+ESP_CONTINUATION_SECONDS e ESP_FIRST_SPEECH_SECONDS foram removidos do caminho v1. INTERACTION_TIMEOUT_SECONDS protege cada turno ativo a partir da fala; não limita a idade da conexão ou a espera ociosa. O ESP não tem cronômetro duplicado, teto total de180s ou configuração local de10/20s. Quedas/erros de transporte, abertura e ping/pong conservam recuperação sem replay.
 
-O sketch está em `esp-project/esp32_ws_mic/esp32_ws_mic.ino`.
+Atualização inicial coordenada: instalar este servidor e compilar/gravar o firmware com conversation_events/input.ready/input.speech_started. Cliente anterior não satisfaz o contrato ampliado; não usar legado como bypass. Depois dessa única atualização, altere somente no .env do Python:
 
-### Configurações obrigatórias antes de compilar
+~~~dotenv
+CONVERSATION_IDLE_TIMEOUT_SECONDS=20
+~~~
 
-Edite as seguintes constantes no início do arquivo:
+Reinicie o serviço/processo Python. Nenhuma mudança ou novo build/flash do ESP é necessária para trocar10 por20. Valor finito positivo entre0,1 e3600s; padrão10.
 
-```cpp
-#define WIFI_SSID   "SEU_SSID"
-#define WIFI_PASS   "SUA_SENHA"
-#define SERVER_HOST "192.168.1.100"   // IP do servidor Python na LAN
-#define SERVER_PORT 8000
-```
+## Retorno de áudio ao MAX98357A
 
----
+Montagem confirmada pelo usuário: MAX98357A BCLK15/WS16/DIN17, USB5V e GND comum, SD/GAIN desconectados, som real no teste isolado. O firmware privado já habilita JUVENAL_SPEAKER_ENABLED e esses GPIOs; não remapear microfone/tela/LED. O exemplo público continua opt-in. No servidor, escolha AUDIO_OUTPUT_MODE=esp32 e TTS_BACKEND=piper; configure modelo e instale o perfil esp32. Nenhuma dessas escolhas valida eletricamente a montagem.
 
-## Protocolo WebSocket
+O servidor converte a taxa nativa do Piper para PCM16 mono 16 kHz com continuidade entre chunks e saturação. Blocos de 640 bytes/320 amostras/20 ms; último pode ser menor e par. output.end traz totais depois da conversão. O servidor não usa player local nem envia ao webhook nesse modo. Entrada local/textual sem vínculo com um cliente apto recebe indisponibilidade.
 
-### Endpoint do servidor
+O ESP anuncia playback somente com TX configurado/inicializado. I2S_NUM_0 RX continua exclusivo do MicroWakeWord; I2S_NUM_1 TX duplica mono nos slots estéreo. Buffer interno de 16 KiB, início após seis blocos ou EOF, créditos de consumo e ACK depois da saída real dos descritores DMA. Underrun detectado, erro ou timeout não gera confirmação fictícia. Áudio isolado da montagem já comprovado pelo usuário; resposta PCM/WS do assistente e estabilidade integrada ainda não comprovadas.
 
-```
-ws://<SERVER_HOST>:8000/ws/esp
-```
+## Migração do legado
 
-### Mensagens ESP32 → Servidor
+O antigo contrato action=wake/start_audio/stop_audio foi movido para /ws/esp/legacy. Exige ESP_LEGACY_ENABLED=true e Bearer; desligado por padrão. Não aceita envelope v1 por heurística, não oferece playback e não é usado pelo novo firmware. Exemplos Arduino históricos precisam de URL/header adaptados e não são o firmware principal. Não importar suas configurações QIO/PSRAM 80 MHz: a montagem atual usa Flash DIO 80 MHz e PSRAM octal 40 MHz.
 
-| Tipo    | Conteúdo                              | Quando                              |
-|---------|---------------------------------------|-------------------------------------|
-| JSON    | `{"action": "wake"}`                  | Energia de voz detectada localmente |
-| JSON    | `{"action": "ping"}`                  | Resposta ao ping do servidor        |
-| JSON    | `{"action": "stop_audio"}`            | Timeout local de streaming          |
-| Binário | Bytes PCM int16 little-endian 16kHz   | Enquanto servidor pede áudio        |
+## Avaliação manual
 
-### Mensagens Servidor → ESP32
+Primeiro reinicie o servidor e confira /health; depois compile/grave o principal pelo ESP-IDF 5.4.4. Observe wake → conexão → fala/transcrição → resposta → nova escuta na mesma conexão → inatividade configurada → WS fechado/wake. Confira nova wake, contexto dentro do TTL, painel observador, erro de conexão sem travamento e diagnóstico WAV separado. A chamada ao webhook já configurado pode produzir efeito externo: não repetir automaticamente falhas de resultado desconhecido.
 
-| Tipo | Conteúdo                    | Significado                          |
-|------|-----------------------------|--------------------------------------|
-| JSON | `{"event": "start_audio"}`  | Começa a enviar frames PCM           |
-| JSON | `{"event": "stop_audio"}`   | Para de enviar áudio                 |
-| JSON | `{"event": "ping"}`         | Keep-alive (responder com ping)      |
-| JSON | `{"event": "pong"}`         | Resposta ao ping do ESP              |
-| JSON | `{"event": "esp_connected"}`| Broadcast — ESP conectou             |
-| JSON | `{"event": "conversation_start"}` | Conversa iniciada              |
-| JSON | `{"event": "conversation_end", "turns": N}` | Conversa encerrada    |
+A montagem MAX98357A já foi confirmada; o aceite de resposta integrada exige rodada separada: formato/velocidade, totais, drenagem, silêncio e recuperação. Linux/systemd tem [guia próprio](homelab-linux-setup.md). Nenhum desses cenários foi executado pelo agente.
 
----
+## Diagnóstico de entrada e inatividade
 
-## Fluxo de Estados do ESP32
+A falha capture_limit da primeira versão WS vinha do buffer linear do WAV e foi corrigida com ring produtor/consumidor. Em overflow real, o ESP informa input_buffer_overflow e não sobrescreve PCM pendente. Logs do ESP contam capturadas/enviadas/pendentes; RMS bruto do mic difere do RMS tratado pelo HPF/ganho no servidor. Logs do Python mostram início/fim de fala e progresso PCM/VAD, sem áudio bruto. Não alterar parâmetros de voz sem medir o caso real.
 
-```
-IDLE ──(energia > limiar por ≥300ms)──▶ envia {"action":"wake"}
-  │                                              │
-  │                                              ▼
-  │                                         WAIT_START
-  │                                              │
-  │                               recebe {"event":"start_audio"}
-  │                                              │
-  │                                              ▼
-  │                                         STREAMING ──(timeout ou stop_audio)──▶ IDLE
-  │                                              │
-  └──────────────────────────────────────────────┘
-```
-
----
-
-## Ajuste de Parâmetros
-
-### Limiar de energia (`ENERGY_THRESHOLD`)
-
-| Valor | Comportamento                                  |
-|-------|------------------------------------------------|
-| 400   | Muito sensível — detecta respiração e ruídos   |
-| 800   | Padrão — sala silenciosa ou semi-silenciosa    |
-| 1500  | Conservador — requer voz clara e próxima       |
-| 2500+ | Requer fala em volume alto                     |
-
-### Duração mínima de fala (`WAKE_SPEECH_MIN_MS`)
-
-Evita disparos por ruídos curtos. O padrão de 300ms equivale a uma sílaba. Aumente para 500ms se houver falsos positivos.
-
-### Timeout de streaming (`STREAM_TIMEOUT_MS`)
-
-Tempo máximo que o ESP32 transmite áudio em uma sessão (padrão: 15 segundos). Se o servidor encerrar antes via `stop_audio`, o estado volta para IDLE imediatamente.
-
----
-
-## Observações de Formato de Áudio
-
-- **Taxa de amostragem**: 16000 Hz (requerida pelo faster-whisper)
-- **Formato I2S**: 32 bits Philips standard, mono canal esquerdo
-- **Conversão**: `int16 = raw32 >> 14` (mesmo shift do `audio_recorder.h` de referência)
-- **Formato enviado via WebSocket**: PCM int16 little-endian, sem cabeçalho
-- **Tamanho dos frames**: 256 amostras × 2 bytes = 512 bytes por frame (~16ms de áudio)
-
----
-
-## Troubleshooting
-
-### ESP32 não conecta ao Wi-Fi
-- Verifique SSID e senha
-- O ESP32-S3 suporta apenas redes 2.4GHz
-
-### WebSocket não conecta
-- Confirme que o servidor está rodando (`python server/main.py`)
-- Confirme o IP do servidor (`SERVER_HOST`) — use `ip addr` ou `ipconfig` na máquina do servidor
-- Verifique que a porta 8000 está acessível na rede local (sem firewall bloqueando)
-
-### Sem áudio / ASR retorna vazio
-- Verifique a pinagem física (GPIO10/11/12 conforme tabela)
-- Confirme que L/R do INMP441 está conectado ao GND
-- Aumente `ENERGY_THRESHOLD` se o ESP disparar `wake` mas não houver fala real
-- Monitor serial mostrará `▶️ Servidor pronto — iniciando stream de áudio` quando o pipeline ativar
-
-### Transcrição com ruído / alucinações
-- O servidor já possui detecção de alucinação por tokens (descarta se <40% tokens únicos)
-- Reduza o ruído ambiente ou aumente `ENERGY_THRESHOLD`
-- Verifique que o microfone está a ≤50cm do falante
-
-### Wake word disparando sem voz
-- Aumente `ENERGY_THRESHOLD` (ex: 1200 → 2000)
-- Aumente `WAKE_SPEECH_MIN_MS` (ex: 300 → 600)
-- Adicione isolamento acústico ou afaste o ESP32 de fontes de ruído
-
----
-
-## Integração com o Servidor
-
-O endpoint `/ws/esp` em `server/main.py` foi adicionado ao servidor existente. Não são necessárias alterações de configuração — o endpoint coexiste com o `/ws` original (usado pelo frontend web).
-
-Ao conectar o ESP32, o servidor emite `{"event": "esp_connected"}` para todos os clientes WebSocket, incluindo o frontend, que pode exibir o status da conexão do dispositivo físico.
+A cada input.ready, o Python registra o valor de CONVERSATION_IDLE_TIMEOUT_SECONDS. input.speech_started registra cancelamento da inatividade. Expiração registra conversation_idle_timeout, para a entrada e encerra ordenadamente sem anúncio TTS. Alterar apenas o .env e reiniciar é suficiente após o firmware inicial coordenado.

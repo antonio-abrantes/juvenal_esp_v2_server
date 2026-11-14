@@ -52,6 +52,7 @@ class Interaction:
     tool_results: dict = field(default_factory=dict)
     offered_automations: set = field(default_factory=set)
     catalog_revision: str = ""
+    esp_link: object = None
 
     @property
     def remaining(self):
@@ -122,6 +123,8 @@ class ConversationEngine:
             self.tools.cancel()
 
     async def event(self, session, event, **payload):
+        if session.esp_link is not None:
+            await session.esp_link.observe(event, payload)
         await self.emit({"event": event, "session_id": session.session_id,
                          "turn_id": session.turn_id, "origin": session.origin, **payload})
 
@@ -153,7 +156,8 @@ class ConversationEngine:
         if not text or len(text.encode("utf-8")) > settings.text_bytes:
             await self.event(session, "error", code="input_text_limit")
             return TurnResult("failed")
-        session.turn_id = uuid4().hex
+        if session.esp_link is None:
+            session.turn_id = uuid4().hex
         session.tool_results.clear()
         started = time.monotonic()
         if settings.log_transcripts:

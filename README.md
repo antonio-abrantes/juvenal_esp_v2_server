@@ -1,6 +1,6 @@
 # Juvenal Server
 
-Servidor Python do assistente de voz **Juvenal**, desenvolvido por Antônio Abrantes. Centraliza transcrição, conversa com IA, contexto e entrega da resposta, preparando a integração com um dispositivo **ESP32-S3** independente do Home Assistant.
+Servidor Python do assistente de voz **Juvenal**, desenvolvido por Antônio Abrantes. Centraliza transcrição, conversa com IA, contexto e entrega da resposta, integrando um dispositivo **ESP32-S3** independente do Home Assistant.
 
 Este componente usa repositório próprio: **`juvenal_esp_v2_server`**, associado ao firmware `juvenal_esp_v2`. A pasta local do servidor permanece `juvenal_server`; firmware e servidor têm históricos separados.
 
@@ -8,13 +8,13 @@ Este componente usa repositório próprio: **`juvenal_esp_v2_server`**, associad
 
 A fase 01 está encerrada no escopo de núcleo e saídas configuráveis, com validação manual parcial no Windows. O usuário comprovou detecção da wake word, captura/transcrição, resposta do LLM, recebimento de texto no webhook com HTTP 200 e retorno à escuta, inclusive após falha HTTP. A transcrição voltou a aparecer no terminal quando habilitada.
 
-A fase 02 entrega ferramentas estruturadas e catálogo de automações Home Assistant/n8n com edição autenticada pelo painel. A fase foi encerrada após o aceite manual informado pelo usuário para o painel, catálogo e conversa. A execução real de ações ainda depende da confirmação do provedor/modelo e do contrato do workflow. WebSocket por interação, retorno PCM/TTS ao ESP32 e reprodução pelo MAX98357A permanecem futuros. O adaptador `/ws/esp` existente é legado; sua presença não comprova integração com o firmware atual.
+A fase 02 entrega ferramentas estruturadas e catálogo de automações Home Assistant/n8n com edição autenticada pelo painel. A fase foi encerrada após o aceite manual informado pelo usuário para o painel, catálogo e conversa. A execução real de ações ainda depende da confirmação do provedor/modelo e do contrato do workflow. A fase 03 acrescenta WS v1 por interação, entrada PCM/VAD, síntese PCM de retorno com controle de fluxo e confirmação de reprodução. O usuário forneceu cinco sessões com playback confirmado no hardware antes da extensão de continuidade. A nova conversa de vários turnos ainda exige atualização inicial e avaliação física. `/ws/esp` é v1; o legado foi movido para `/ws/esp/legacy`, desligado por padrão e autenticado.
 
-O firmware experimental **Juvenal Visual v0.4**, no projeto separado `juvenal_http_teste`, continua usando MicroWakeWord, gravação WAV PCM16 e HTTP POST. Ele não utiliza o transporte futuro deste servidor. A integração será implementada no firmware principal `juvenal_esp`, com ESP-IDF **5.4.4**.
+O firmware experimental **Juvenal Visual v0.4**, no projeto separado `juvenal_http_teste`, continua usando MicroWakeWord, gravação WAV PCM16 e HTTP POST. Ele não utiliza este transporte. O cliente integrado foi implementado no firmware principal `juvenal_esp`, com ESP-IDF **5.4.4**, reaproveitando seletivamente face, painel e diagnóstico WAV/POST. Os turnos individuais já executaram na placa; a extensão posterior de continuidade precisa de novo build/flash inicial e avaliação do usuário.
 
 ## Como a conversa funciona
 
-O fluxo atual de diagnóstico usa o microfone do computador: wake word → captura → Whisper local → texto → provedor de IA → resposta final → destino configurado.
+A entrada pode vir do ESP por WS ou do diagnóstico local. No ambiente atual, LOCAL_VOICE_ENABLED=false: wake e microfone ficam no ESP; o Python recebe PCM, executa Whisper/IA e entrega no destino configurado. A entrada local do computador continua opcional.
 
 As integrações têm responsabilidades distintas:
 
@@ -33,11 +33,11 @@ Com OpenAI como provedor e saída `endpoint`, a resposta é gerada pela OpenAI e
 |---|---|
 | `local` | Sintetiza com Piper e reproduz no dispositivo de áudio do servidor |
 | `endpoint` | Envia uma tentativa de POST por resposta final; não carrega nem executa TTS |
-| `esp32` | Reserva a saída futura; atualmente informa `esp32_playback_unavailable` |
+| `esp32` | Piper → PCM16 mono 16 kHz → WS v1; conclui após confirmação do TX pelo ESP. Exige cliente com playback habilitado e montagem apta |
 
 No modo `endpoint`, o formato padrão é JSON `{"texto": "resposta final da IA"}`; há opção de texto puro. Status aceito confirma entrega HTTP conforme a configuração, sem confirmar reprodução de fala. Não há reenvio ou mudança automática de destino após falha.
 
-`LOCAL_VOICE_ENABLED` controla wake/microfone do host, `STT_ENABLED` habilita Whisper e `AUDIO_OUTPUT_DEVICE` escolhe somente a reprodução local. No modo `endpoint` explícito, cada ativação de áudio termina após uma resposta; o servidor não presume o momento em que um receptor externo terminou de falar.
+`LOCAL_VOICE_ENABLED` controla wake/microfone do host, `STT_ENABLED` habilita Whisper e `AUDIO_OUTPUT_DEVICE` escolhe somente a reprodução local. No modo endpoint, o aceite HTTP conclui a entrega do turno, sem presumir que um receptor externo terminou de falar. Na extensão WS v1, o ESP pode retomar a escuta na mesma conexão após essa entrega.
 
 ## Instalação e execução
 
@@ -100,7 +100,7 @@ Whisper e Piper podem baixar modelos ao iniciar a capacidade correspondente. No 
 
 Para enviar a resposta ao webhook, use `AUDIO_OUTPUT_MODE=endpoint` e preencha `AUDIO_TEXT_ENDPOINT_*`. Para ouvir pelo computador, use `AUDIO_OUTPUT_MODE=local`, configure Piper/dispositivo e instale as dependências locais correspondentes. Reinicie o processo após mudar o `.env`.
 
-O modo `esp32` só poderá ser usado para reprodução depois da implementação da integração e validação no dispositivo. Selecioná-lo agora não habilita retorno de áudio.
+Para retornar áudio ao ESP, com a montagem já validada (GPIO15/16/17, USB5V/GND comum), use o speaker habilitado no header privado do firmware, defina `AUDIO_OUTPUT_MODE=esp32`, `TTS_BACKEND=piper`, configure `PIPER_MODEL` e instale o perfil `esp32` (Whisper + Piper, sem player do host). Reinicie o servidor e grave o firmware atualizado manualmente. Origem textual/microfone do host sem vínculo WS não consegue receber essa saída e retorna indisponibilidade; não existe fallback. Para voltar ao webhook, restaure `AUDIO_OUTPUT_MODE=endpoint` e reinicie; não precisa habilitar speaker no ESP.
 
 ## Painel, configuração e privacidade
 
@@ -108,10 +108,11 @@ O modo `esp32` só poderá ser usado para reprodução depois da implementação
 - O backend aceita entrada textual `send_text`; o painel atual é um monitor, sem formulário de chat.
 - Para controles pela LAN, configure `PANEL_USERNAME` e `PANEL_PASSWORD`. Sem essas credenciais, escrita fica restrita a conexões loopback. Use rede protegida ou HTTPS para credenciais Basic.
 - O prompt ativo padrão é `configs/system_prompt.md`, criado do [exemplo](configs/system_prompt.example.md). Aceita `{{DATA_HORA}}`, `{{DATA}}`, `{{HORA}}` e `{{DIA_SEMANA}}`.
+- Para personalizar Juvenal, edite a Ficha da persona (nome, personalidade, tom, humor e respostas) e os administradores/preferências no arquivo pessoal; salve em UTF-8 e reinicie o Python. Nenhuma atualização do ESP é necessária. Dados familiares ficam apenas no prompt ignorado; o exemplo público usa campos genéricos. Veja [personalização da persona](docs/configuration.md#personalizar-a-persona).
 - `LOG_TRANSCRIPTS=true` exibe texto reconhecido; `AUDIO_TEXT_ENDPOINT_LOG_RESPONSE=true` exibe uma prévia de até 4096 bytes do retorno HTTP. Ambas ficam desabilitadas no exemplo e devem ser habilitadas deliberadamente: os logs podem conter conversa privada.
 - `.env`, prompts pessoais, ambientes virtuais, modelos, gravações, logs, dados e arquivos históricos ficam excluídos pelo `.gitignore`. Somente exemplos revisados devem ser versionados. Não force a inclusão de arquivos ignorados.
 
-Consulte também a [estrutura dos módulos](PROJECT_STRUCTURE.md). Os guias de ASR, wake word e cliente ESP legado preservam referências históricas; este README e a configuração descrevem o estado atual.
+Consulte a [estrutura dos módulos](PROJECT_STRUCTURE.md), o [contrato WS v1 e migração](docs/esp32-websocket-mic.md) e a [operação Linux/systemd](docs/homelab-linux-setup.md). Os guias de ASR/wake word preservam referências históricas.
 
 ## Modelo personalizado e agradecimentos
 
@@ -131,8 +132,22 @@ Confirmações expiram e valem somente para os parâmetros, identidade e revisã
 
 ## Próximas entregas e validação
 
-A próxima etapa integra WebSocket por sessão, áudio PCM16 e reprodução no ESP32-S3, mantendo os destinos de saída independentes. A validação real das ferramentas e do workflow n8n permanece pendente.
+A fase 03 entrega a implementação do protocolo e do firmware; a aceitação integrada depende do usuário. Comece por entrada ESP + saída endpoint, com `ESP_DEVICE_ID`/`ESP_DEVICE_TOKEN` iguais no `.env` e no header privado do ESP, `STT_ENABLED=true` e servidor acessível na LAN. `LOCAL_VOICE_ENABLED=false` desliga somente o microfone do computador; na configuração local existente ele foi mantido ligado até a migração ser avaliada. Não exponha token em URL. O firmware experimental WAV não passa a usar WS apenas por atualizar o servidor. A validação real das ferramentas e do workflow n8n permanece pendente.
 
 Permanecem sem comprovação nesta entrega: conectividade após o último ajuste da URL local, log do corpo devolvido pelo webhook, reprodução local nesta versão, todos os cenários de limites/cancelamento, execução Linux/systemd e áudio no ESP32. O recebimento HTTP 200 anterior continua sendo uma evidência válida de entrega textual.
 
 A validação funcional é manual, pelo usuário. Não há suíte automatizada de testes ou implantação automática nesta entrega.
+
+## Continuidade da conversa com o ESP
+
+Na extensão v1 de14/11/2026, uma wake inicia conversa de vários turnos no mesmo WS. Configure no .env do Python:
+
+~~~dotenv
+CONVERSATION_IDLE_TIMEOUT_SECONDS=10
+~~~
+
+O ESP informa quando está pronto para escutar e quando a fala começa. O prazo conta somente na escuta ociosa, é cancelado na fala e reiniciado depois da resposta completa e de nova prontidão. Captura de fala, STT, ferramentas, TTS e espera do ACK não consomem esse prazo. Expiração encerra o WS ordenadamente e devolve o ESP à wake.
+
+É necessária uma atualização inicial coordenada dos dois projetos para os novos eventos. Depois dela, alterar10 para20 nessa variável e reiniciar o Python é suficiente, mantendo o firmware instalado. As antigas ESP_CONTINUATION_SECONDS/ESP_FIRST_SPEECH_SECONDS não controlam mais o v1; não há timeout ocioso duplicado no ESP. Veja o [contrato e a configuração](docs/esp32-websocket-mic.md).
+
+A continuidade nova teve validação específica isolada do servidor; execução com o ESP físico atualizado ainda precisa de conferência. Logs anteriores comprovam os turnos individuais e o usuário aprovou LED/boca, não esta alteração posterior.

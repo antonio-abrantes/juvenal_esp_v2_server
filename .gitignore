@@ -35,6 +35,7 @@ htmlcov/
 /tmp/
 /temp/
 /backups/
+/deploy/juvenal-server.service
 *.log
 *.log.*
 *.wav

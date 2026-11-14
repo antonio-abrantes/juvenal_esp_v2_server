@@ -1,69 +1,78 @@
-# Juvenal Server — preparação Linux nativa (JS-03.8)
+# Juvenal Server — Linux nativo e systemd
 
-Esta entrega prepara scripts, caminhos, dependências por capacidade e configuração para Python nativo, sem Docker. O agente não acessou o host Linux, instalou dependências, iniciou processos nem ativou serviço. Systemd/autostart, reboot e finalização operacional JS-03.9 permanecem futuros e podem ser concluídos em local/endpoint sem ESP32.
+Fase 03 entrega scripts, perfis, unit parametrizável e roteiro operacional. Host Linux, arquitetura, usuário e caminhos reais ainda não foram informados; serviço não foi gerado para um host específico, instalado ou iniciado pelo agente. Não há Docker obrigatório.
 
-## Antes de instalar no host real
+## Preparação do host
 
-Conferir distribuição/arquitetura, versão Python, usuário não root e diretórios de código/configuração/cache/dados. Python 3.11 é a referência. As versões diretas dos manifests foram extraídas dos metadados do venv Windows existente, não de uma instalação Linux nova. Há pinos diretos; dependências transitivas continuam resolvidas pelo pip. Não apresentar esses arquivos como lock integral ou confirmação de wheels em toda arquitetura.
+Use Python 3.11 como referência. Confirme SO/arquitetura e disponibilidade das dependências nativas/wheels antes de escolher pacotes do SO. Os pinos diretos dos requirements não constituem lock integral de transitivas nem comprovação de instalação Linux.
 
-Whisper e Piper usam bibliotecas nativas e modelos; áudio local exige PortAudio/ALSA conforme a distribuição. **Entrada textual ou ESP com saída endpoint não exige placa de som, player, PulseAudio ou grupo audio.** Wake local exige runtime TFLite/pymicro-features compatíveis com o host; confirmar disponibilidade no SO/arquitetura antes de escolher o perfil local.
+Escolha usuário existente sem root, diretório de código/venv, arquivo dotenv protegido, diretório de dados persistentes e cache gravável. Não copie venv Windows para Linux. Preserve o prompt ativo e o catálogo existente; ao mudar JUVENAL_DATA_DIR, copie o catálogo e seu backup de forma deliberada antes de iniciar, sem sobrescrever o original.
 
-## Perfis e requisitos
-
-| Perfil do instalador | Pacotes |
+| Perfil | Dependências além da base |
 |---|---|
-| auto | Base e capacidades selecionadas pelo .env/ambiente; padrão compatível local |
-| text | Somente base, para entrada textual com entrega endpoint |
-| endpoint | Base + Whisper/numpy, para áudio recebido sem captura/player local |
-| local | Base + Whisper + captura/wake + Piper/player |
-| esp32 | Base + Whisper; playback ESP permanece indisponível nesta fase |
+| auto | Conforme .env/ambiente |
+| text | Nenhuma; texto + endpoint |
+| endpoint | Whisper/numpy, sem captura ou player local |
+| local | Whisper, wake/captura, Piper e player |
+| esp32 | Whisper + Piper; sem wake/player do host |
 
-Perfis explícitos selecionam dependências e não alteram o .env. O perfil auto usa STT_ENABLED, LOCAL_VOICE_ENABLED e AUDIO_OUTPUT_MODE. O legado sem modo explícito permanece misto e requer saída local para as origens locais.
+Entrada ESP + endpoint dispensa placa de som, grupo audio e PulseAudio. Saída esp32 exige Piper, mas não player local. PortAudio/ALSA e runtime de wake só são necessários quando capacidades locais estão habilitadas.
 
-O requirements.txt conserva o perfil local completo para instalação manual. requirements-core.txt não instala OpenAI SDK, Piper ou áudio. Os outros manifests são requisitos de capacidades reais. O modelo MicroWakeWord, modelos Whisper/Piper e prompt devem ser preservados; instalar dependências não configura os provedores ou copia segredos.
+## Instalação e primeiro início manuais
 
-## Preparação manual
-
-Copiar o projeto para o diretório escolhido, sem transportar um venv Windows para Linux. Não alterar o original externo. O instalador usa JUVENAL_PYTHON (padrão python3) para criar o venv; usar o executável 3.11 instalado no host, quando necessário.
-
-A partir da raiz do projeto no Linux:
+Na raiz do repositório no Linux, ajuste o dotenv antes de instalar auto. Se desejar arquivo externo, defina JUVENAL_ENV_FILE no ambiente do instalador e do processo, com caminho absoluto. Não execute source .env: dotenv não é shell. Os instaladores preservam arquivos existentes; o perfil seleciona pacotes, não reconfigura capacidades.
 
 ~~~bash
 bash scripts/install.sh auto
-~~~
-
-Se .env já existir, seu conteúdo e permissões não são reescritos. Em instalação nova, uma cópia do exemplo é criada com umask 077. Configurar fornecedor e capacidades antes de iniciar. Não executar source .env: dotenv não é um script de shell.
-
-Exemplo de configuração a acrescentar para uma instalação que entrega texto e não captura áudio no host:
-
-~~~dotenv
-AUDIO_OUTPUT_MODE=endpoint
-LOCAL_VOICE_ENABLED=false
-STT_ENABLED=true
-~~~
-
-Preencher separadamente AUDIO_TEXT_ENDPOINT_URL e contrato real; se a entrada for só texto, STT_ENABLED=false e perfil text dispensam também o Whisper. Não colocar chaves reais na documentação. Consultar [configuration.md](configuration.md) para autenticação/formato/status e migração da variável legada.
-
-## Inicialização pelo usuário
-
-~~~bash
 bash scripts/start.sh
 ~~~
 
-O script encontra a raiz a partir do seu próprio diretório, chama o Python absoluto do venv e usa exec para transmitir sinais ao processo Python. Não exige shell ativado, VS Code ou login gráfico. Também é possível iniciar com .venv/bin/python server/main.py.
+Para entrada ESP com entrega textual, o dotenv deve conter AUDIO_OUTPUT_MODE=endpoint, LOCAL_VOICE_ENABLED=false, STT_ENABLED=true, ESP_DEVICE_ID/TOKEN e AUDIO_TEXT_ENDPOINT_URL, além do provedor de IA. Copie configs/system_prompt.example.md para o prompt ativo somente se não existir; configure SYSTEM_PROMPT_PATH deliberadamente quando externo.
 
-JUVENAL_HOST e JUVENAL_PORT controlam endereço/porta. O painel é servido em /, /ws transmite eventos, /health mostra capacidades. Os scripts não iniciam Ollama, n8n, Home Assistant nem outro serviço externo. Cada dependência externa precisa de operação própria.
+Whisper/Piper podem obter modelos no primeiro início da capacidade. Prepare-os/cacheie sob o usuário real do serviço. Endpoint não importa Piper. Os scripts não iniciam n8n, Ollama, HA ou outros serviços externos.
 
-Whisper/Piper ausentes podem baixar modelos quando a aplicação for iniciada com a capacidade correspondente; preparar/cachear previamente no provisionamento escolhido pelo usuário. Em endpoint, Piper não é importado nem baixado. Não pressupor que uma rede pronta significa provedor pronto.
+## Gerar a unit com caminhos reais
 
-## Persistência e recuperação
+O template deploy/juvenal-server.service.in não é uma unit pronta para instalar. scripts/render_service.py valida usuário não root existente e caminhos absolutos, inclusive o Python do venv, dotenv, dados e cache. O gerador só escreve o arquivo solicitado; não executa systemctl. Execute no host Linux real após criar diretórios com proprietário/permissões corretos.
 
-.env e configs/system_prompt.md são os arquivos ativos de configuração/prompt. Código/venv devem ser separados de configuração protegida e de diretórios graváveis no desenho do serviço. Cache de modelos usa o usuário do processo. JUVENAL_DATA_DIR reserva os dados futuros, sem criar catálogo nesta fase. Histórico em memória pode ser descartado em restart.
+Substitua TODOS os exemplos abaixo pelos caminhos/usuário reais. Use o mesmo diretório de dados que contém o catálogo escolhido.
 
-O núcleo controla admissão, tarefas, cancelamento, limites e descarte de resultados atrasados; um worker síncrono residual continua contabilizado como ocupado. Shutdown não significa rollback de um POST externo. Não repetir respostas/ações após reboot nem trocar destino após resultado desconhecido.
+~~~bash
+.venv/bin/python scripts/render_service.py \
+  --user USUARIO_EXISTENTE \
+  --project-dir /CAMINHO/DO/PROJETO \
+  --env-file /CAMINHO/DA/CONFIGURACAO/juvenal.env \
+  --data-dir /CAMINHO/DOS/DADOS \
+  --cache-dir /CAMINHO/DO/CACHE \
+  --output /CAMINHO/DO/PROJETO/deploy/juvenal-server.service
+~~~
 
-## O que ainda falta para operação definitiva
+O gerador recusa sobrescrita sem --replace. Confira o arquivo antes de instalar. Não substitua o caminho lexical .venv/bin/python pelo destino resolvido do symlink: isso pode perder o venv.
 
-Identificar host/usuário/caminhos; verificar dependências nativas/wheels; preparar unit systemd apropriada, EnvironmentFile/permissões, WorkingDirectory, Python do venv e limites de restart/shutdown. A unit não foi criada nem instalada nesta fase. Validar boot, restart, encerramento e falhas fica a cargo do usuário em JS-03.9.
+A unit usa JUVENAL_ENV_FILE para que Python leia o dotenv, preservando a sintaxe já usada; não usa EnvironmentFile do systemd. JUVENAL_DATA_DIR e XDG_CACHE_HOME são explícitos e prevalecem sobre o dotenv. Variáveis já presentes no processo prevalecem sobre o arquivo; confira o ambiente efetivo sem registrar segredos.
 
-Para rollback, recuperar código/scripts/manifests e configuração compatível entre interações; recriar dependências no venv somente quando solicitado. Não reenviar um POST de resultado desconhecido. A baseline anterior desta entrega está registrada na documentação de trabalho do workspace, não em uma tag nova.
+O usuário precisa ler código/venv/configuração/prompt/modelos e escrever apenas dados/cache. Use permissões restritas no dotenv (ex.: 0600, proprietário correto). Dados/cache não devem ficar dentro do diretório de código protegido. A unit usa ProtectSystem=strict, ProtectHome=read-only, NoNewPrivileges, PrivateTmp, UMask=0077 e ReadWritePaths para dados/cache. Diretórios precisam existir; valide permissões no host. Modelos que exigem download não devem apontar para diretório de código somente leitura.
+
+## Instalar, operar e consultar logs
+
+Somente após revisar a unit gerada, os comandos manuais no host real são:
+
+~~~bash
+sudo install -m 0644 /CAMINHO/DO/PROJETO/deploy/juvenal-server.service /etc/systemd/system/juvenal-server.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now juvenal-server.service
+sudo systemctl status juvenal-server.service
+sudo journalctl -u juvenal-server.service -f
+~~~
+
+Após editar o dotenv: sudo systemctl restart juvenal-server.service. Após editar a unit: daemon-reload e restart. Para parar: sudo systemctl stop juvenal-server.service. Para impedir início no boot: sudo systemctl disable juvenal-server.service. Não executar essas ações como consequência automática de gerar a unit.
+
+Restart=on-failure tem intervalo de 5 s e limite de três partidas por 120 s. Após corrigir uma falha persistente, examine o journal antes de usar reset-failed/start. SIGTERM encerra admissões/sessões e sinaliza workers; TimeoutStopSec=90 dá prazo ao processo, com controle do grupo. Disponibilidade de rede não garante disponibilidade de STT/LLM/n8n.
+
+JUVENAL_HOST/JUVENAL_PORT controlam bind; /health informa capacidades, não garante sucesso de uma conversa externa. Painel em / e observador em /ws; dispositivo usa /ws/esp. Firewall/proxy/TLS devem permitir Upgrade WS e prazos compatíveis, sem publicar Basic ou Bearer em rede desprotegida.
+
+## Atualização, rollback e aceite pendente
+
+Atualize código e dependências entre interações, preservando dotenv, prompt, modelos, dados e cópia anterior do catálogo. Reinicie manualmente. Para rollback, pare o serviço, recupere código/dependências/configuração compatíveis e inicie novamente. Não apague NVS do ESP ou catálogo como rotina. Histórico é volátil; catálogo é persistente. Nenhuma ação/entrega desconhecida é repetida após crash/reboot.
+
+Ainda pendentes no host: resolução/instalação de dependências, geração da unit final, permissões/cache, boot sem login, restart após falha, shutdown em conversa e preservação do catálogo. Podem ser avaliados com endpoint/local, sem MAX98357A. O código e roteiro entregues não equivalem a serviço operacional aceito.

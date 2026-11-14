@@ -109,12 +109,14 @@ class ResponseOutput:
         session.check()
         if not isinstance(text, str) or not text.strip() or len(text.encode("utf-8")) > settings.text_bytes:
             return DeliveryResult("failed", mode, "invalid_response_text")
-        if mode == "esp32":
-            # Não sintetizar nem redirecionar enquanto transporte/playback v1 não existir.
-            return DeliveryResult("failed", mode, "esp32_playback_unavailable")
         attempt = {}
         try:
-            if mode == "endpoint":
+            if mode == "esp32":
+                if session.esp_link is None or self.engine is None:
+                    return DeliveryResult("failed", mode, "esp32_playback_unavailable")
+                await session.esp_link.play_text(text, self.engine, self.worker)
+                result = DeliveryResult("delivered", mode)
+            elif mode == "endpoint":
                 timeout = min(settings.endpoint_timeout, session.remaining)
                 attempt = {"turn_id": session.turn_id, "deadline": time.monotonic() + timeout}
                 result = await self.worker.run(self._endpoint, text, attempt, timeout=timeout)

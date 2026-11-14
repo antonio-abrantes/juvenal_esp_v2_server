@@ -10,7 +10,10 @@ from urllib.parse import urlsplit
 from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(PROJECT_ROOT / ".env", override=False)
+ENV_FILE = Path(os.getenv("JUVENAL_ENV_FILE", str(PROJECT_ROOT / ".env"))).expanduser()
+if not ENV_FILE.is_absolute():
+    ENV_FILE = PROJECT_ROOT / ENV_FILE
+load_dotenv(ENV_FILE, override=False)
 
 
 def flag(name: str, default: bool = False) -> bool:
@@ -109,6 +112,7 @@ class Settings:
     interaction_timeout: float
     delivery_timeout: float
     conversation_timeout: float
+    conversation_idle_timeout: float
     esp_silence_timeout: float
     idle_enabled: bool
     idle_message: str
@@ -181,6 +185,7 @@ class Settings:
             interaction_timeout=number("INTERACTION_TIMEOUT_SECONDS", 180, 600),
             delivery_timeout=number("DELIVERY_TIMEOUT_SECONDS", 60, 120),
             conversation_timeout=number("CONVERSATION_TIMEOUT", 15, 120),
+            conversation_idle_timeout=number("CONVERSATION_IDLE_TIMEOUT_SECONDS", 10, 3600, .1),
             esp_silence_timeout=number("ESP_SILENCE_TIMEOUT", 1.8, 10),
             idle_enabled=flag("IDLE_MESSAGE_ENABLED", True),
             idle_message=os.getenv("IDLE_MESSAGE", "Estou voltando ao modo de espera. Me chame quando precisar!"),
@@ -251,3 +256,31 @@ class ToolSettings:
 
 
 tool_settings = ToolSettings.from_environment()
+
+
+@dataclass(frozen=True)
+class ESPSettings:
+    legacy_enabled: bool
+    vad_start_rms: int
+    vad_end_rms: int
+    silence_seconds: float
+    max_input_seconds: float
+    playback_seconds: float
+    handshake_seconds: float
+
+    @classmethod
+    def from_environment(cls):
+        start = integer("ESP_VAD_START_RMS", 300, 32767)
+        end = integer("ESP_VAD_END_RMS", 100, 32767, 0)
+        if end > start:
+            raise ValueError("ESP_VAD_END_RMS deve ser menor que ESP_VAD_START_RMS")
+        return cls(
+            legacy_enabled=flag("ESP_LEGACY_ENABLED", False),
+            vad_start_rms=start, vad_end_rms=end,
+            silence_seconds=number("ESP_VAD_SILENCE_SECONDS", 1.8, 5),
+            max_input_seconds=number("ESP_MAX_INPUT_SECONDS", 30, 30),
+            playback_seconds=number("ESP_MAX_PLAYBACK_SECONDS", 60, 60),
+            handshake_seconds=number("ESP_HANDSHAKE_SECONDS", 5, 10))
+
+
+esp_settings = ESPSettings.from_environment()

@@ -43,10 +43,12 @@ class LLMClient:
         self.worker = SingleWorker()
         self.max_tokens, self.temperature = max_tokens, temperature
         path = prompt_path or settings.prompt_path
-        self._prompt_template = (path.read_text(encoding="utf-8").strip()
+        self._prompt_template = (path.read_text(encoding="utf-8-sig").strip()
                                  if path.exists() else system_prompt) or (
-            "Você é Juvehnal, um assistente de voz. Responda em Português do Brasil, "
-            "com frases naturais e concisas.")
+            "Você é Juvenal, um agente inteligente e assistente pessoal. "
+            "Seja atento, prestativo e bem-humorado, com humor leve quando apropriado. "
+            "Responda em português do Brasil, com frases naturais e concisas para voz, "
+            "sem Markdown. Não invente fatos, identidades ou ações realizadas.")
         self._is_webhook = self.provider.model == "webhook"
         self._url = (self.provider.base_url if self._is_webhook else
                      self.provider.base_url.rstrip("/") + "/chat/completions")

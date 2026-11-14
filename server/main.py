@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from config import PROJECT_ROOT, settings, number, tts_options, whisper_options
+from config import PROJECT_ROOT, settings, esp_settings, number, tts_options, whisper_options
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -23,6 +23,7 @@ from llm_client import LLMClient
 from response_output import ResponseOutput
 from runtime import CapacityBusy
 from tools.home_assistant import AutomationTools
+from esp_transport import ESPTransport
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
@@ -36,6 +37,7 @@ tasks = set()
 agent_state = "idle"
 resume_task = None
 catalog = CatalogStore(settings.data_dir)
+esp_transport = None
 
 
 def spawn(coroutine, name):
@@ -196,19 +198,24 @@ async def on_wake_word_detected():
 
 @asynccontextmanager
 async def lifespan(app):
-    global engine, transcriber, wake_detector
+    global engine, transcriber, wake_detector, esp_transport
     output = ResponseOutput()
     llm = LLMClient()
     if settings.legacy_endpoint:
         logger.warning("Compatibilidade TTS_HA_WEBHOOK_URL ativa: ESP textual, demais entradas locais. "
                        "Migre explicitamente AUDIO_OUTPUT_MODE; nenhum valor secreto será exibido.")
     # Importações por capacidade: endpoint não importa tts/Piper, player ou pyttsx3.
-    if settings.output_mode == "local":
+    if settings.output_mode in {"local", "esp32"}:
         try:
             from tts import create_tts_engine
-            output.engine = await asyncio.to_thread(create_tts_engine, **tts_options())
+            options = tts_options()
+            if settings.output_mode == "esp32":
+                if options["backend"] != "piper":
+                    raise ValueError("esp32_requires_piper")
+                options["output_device"] = None
+            output.engine = await asyncio.to_thread(create_tts_engine, **options)
         except Exception:
-            logger.warning("Saída local indisponível; veja dependências/modelo. Sem fallback de destino.")
+            logger.warning("Motor de saída indisponível; veja dependências/modelo. Sem fallback de destino.")
     if settings.stt_enabled:
         try:
             from transcriber import WhisperTranscriber
@@ -217,6 +224,7 @@ async def lifespan(app):
             logger.warning("STT indisponível; entrada textual continua disponível.")
     tools = AutomationTools(catalog, llm.provider)
     engine = ConversationEngine(llm, output, broadcast, set_state, transcriber, tools=tools)
+    esp_transport = ESPTransport(engine, transcriber, admit, return_to_idle)
     capability = await tools.capability()
     logger.info("Ferramentas: disponíveis=%s motivo=%s",
                 capability["available"], capability["reason"] or "ready")
@@ -244,6 +252,10 @@ async def lifespan(app):
         llm.cancel()
         output.cancel()
         tools.cancel()
+        try:
+            await asyncio.wait_for(esp_transport.shutdown(), 2)
+        except TimeoutError:
+            logger.warning("Prazo de encerramento das conexões ESP atingido")
         if wake_detector:
             await asyncio.to_thread(wake_detector.stop)
         for task in list(tasks):
@@ -288,8 +300,10 @@ async def health():
             "output_mode": settings.output_mode, "legacy_output": settings.legacy_endpoint,
             "busy": bool(engine and (engine.active or engine.workers_busy)),
             "capabilities": {"text_input": True, "local_voice": settings.local_voice_enabled,
-                             "esp_legacy_input": transcriber is not None,
-                             "esp_playback": False, "ws_v1": False,
+                             "esp_legacy_input": bool(esp_settings.legacy_enabled and settings.esp_token
+                                                      and transcriber is not None),
+                             "esp_playback": bool(settings.output_mode == "esp32" and output and output.engine),
+                             "ws_v1": bool(settings.esp_token and transcriber is not None),
                              "tools": tool_capability}}
 
 
@@ -360,6 +374,17 @@ async def websocket_endpoint(ws: WebSocket):
 
 @app.websocket("/ws/esp")
 async def websocket_esp(ws: WebSocket):
+    if esp_transport is None:
+        await ws.close(code=1013)
+        return
+    await esp_transport.serve(ws)
+
+
+@app.websocket("/ws/esp/legacy")
+async def websocket_esp_legacy(ws: WebSocket):
+    if not esp_settings.legacy_enabled or not settings.esp_token:
+        await ws.close(code=1008)
+        return
     if len(device_clients) >= 8:
         await ws.close(code=1008)
         return
@@ -373,4 +398,4 @@ async def websocket_esp(ws: WebSocket):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host=settings.host, port=settings.port, reload=False,
-                ws_max_size=max(65536, settings.text_bytes * 2), log_level="info")
+                ws_max_size=max(8192, settings.text_bytes * 2), ws_max_queue=4, log_level="info")
