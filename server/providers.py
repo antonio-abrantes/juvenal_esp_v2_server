@@ -123,18 +123,6 @@ def list_providers() -> None:
     print(f"Para chavear: alterar LLM_PROVIDER= no ficheiro .env\n")
 
 
-def tool_calling_diagnostics(provider):
-    """Somente flags de comparacao; nunca endpoint, chave ou conteudo do .env."""
-    active = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
-    return {
-        "enabled": tool_settings.enabled,
-        "confirmed": tool_settings.provider_confirmed,
-        "provider_matches": tool_settings.provider == active,
-        "model_matches": tool_settings.model == provider.model,
-        "adapter_matches": tool_settings.adapter == "openai-chat-completions",
-    }
-
-
 def tool_calling_capability(provider):
     active = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
     if tool_settings.error:

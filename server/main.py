@@ -20,7 +20,6 @@ from automation_catalog import CatalogStore
 from catalog_api import create_catalog_router
 from legacy_esp import serve_legacy_esp
 from llm_client import LLMClient
-from providers import tool_calling_diagnostics
 from response_output import ResponseOutput
 from runtime import CapacityBusy
 from tools.home_assistant import AutomationTools
@@ -235,11 +234,6 @@ async def lifespan(app):
                 hass_settings.log_content)
     logger.info("Ferramentas: disponíveis=%s motivo=%s",
                 capability["available"], capability["reason"] or "ready")
-    if capability["reason"] == "provider_model_tools_unconfirmed":
-        diagnostics = tool_calling_diagnostics(llm.provider)
-        logger.warning("Ferramentas: confirmado=%s provedor_coincide=%s modelo_coincide=%s adaptador_coincide=%s",
-                       diagnostics["confirmed"], diagnostics["provider_matches"],
-                       diagnostics["model_matches"], diagnostics["adapter_matches"])
     try:
         if settings.local_voice_enabled and transcriber is not None:
             try:
