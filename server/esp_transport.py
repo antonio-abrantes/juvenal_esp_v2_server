@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import queue
+import re
 import sys
 import threading
 import time
@@ -19,6 +20,7 @@ from tools.registry import ArgumentError, decode_json
 logger = logging.getLogger(__name__)
 FORMAT = {"sample_rate": 16000, "channels": 1, "sample_format": "s16le"}
 PREROLL_BYTES = 16000  # 500 ms; silencio de espera nunca acumula uma fala inteira.
+MAX_PLAYBACK_BUFFER_BYTES = 65536  # FIFO anunciada; clientes de16KiB continuam validos.
 
 
 class ESPProtocolError(RuntimeError):
@@ -119,6 +121,12 @@ class ESPConnection:
                 raise ESPProtocolError("session_or_turn_mismatch")
             event, payload = message["event"], message["payload"]
             if event == "session.cancel":
+                reason = payload.get("reason")
+                if not isinstance(reason, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", reason):
+                    reason = "unspecified"
+                logger.warning("Sessao %s turno %s: cancelamento pelo ESP; motivo=%s enviados=%d creditados=%d",
+                               self.session.session_id, self.session.turn_id, reason,
+                               self.sent_bytes, self.consumed_bytes)
                 self.session.cancelled = True
                 raise ESPProtocolError("cancelled")
             if event == "input.start":
@@ -353,6 +361,9 @@ class ESPConnection:
         self.sent_bytes = self.consumed_bytes = 0
         self.credit.clear()
         self.playback_done.clear()
+        started_at = time.monotonic()
+        first_sent_at = last_sent_at = queue_wait_started = credit_wait_started = None
+        max_send_gap = max_queue_wait = credit_wait_seconds = 0.0
 
         def produce():
             for block in pcm16_blocks(engine.synthesize_pcm(text), stop, esp_settings.playback_seconds):
@@ -379,20 +390,38 @@ class ESPConnection:
                 try:
                     block = blocks.get_nowait()
                 except queue.Empty:
+                    if queue_wait_started is None:
+                        queue_wait_started = time.monotonic()
                     if future.done():
                         future.result()
+                        max_queue_wait = max(max_queue_wait, time.monotonic() - queue_wait_started)
+                        queue_wait_started = None
                         break
                     await asyncio.sleep(.01)
                     continue
+                if queue_wait_started is not None:
+                    max_queue_wait = max(max_queue_wait, time.monotonic() - queue_wait_started)
+                    queue_wait_started = None
+                if self.sent_bytes + len(block) - self.consumed_bytes > self.window:
+                    credit_wait_started = time.monotonic()
                 while self.sent_bytes + len(block) - self.consumed_bytes > self.window:
                     self.credit.clear()
                     if self.sent_bytes + len(block) - self.consumed_bytes <= self.window:
                         break
                     await asyncio.wait_for(self.credit.wait(), min(5, max(.001, deadline - time.monotonic())))
                     self.session.check()
+                if credit_wait_started is not None:
+                    credit_wait_seconds += time.monotonic() - credit_wait_started
+                    credit_wait_started = None
                 self.sent_bytes += len(block)
                 async with self.send_lock:
                     await asyncio.wait_for(self.ws.send_bytes(block), 2)
+                sent_at = time.monotonic()
+                if first_sent_at is None:
+                    first_sent_at = sent_at
+                if last_sent_at is not None:
+                    max_send_gap = max(max_send_gap, sent_at - last_sent_at)
+                last_sent_at = sent_at
             if not self.sent_bytes:
                 raise ESPProtocolError("empty_synthesis")
             await self.send("output.end", {"total_bytes": self.sent_bytes,
@@ -405,6 +434,16 @@ class ESPConnection:
             stop.set()
             worker.cancel()
             self.output_active = False
+            finished_at = time.monotonic()
+            if queue_wait_started is not None:
+                max_queue_wait = max(max_queue_wait, finished_at - queue_wait_started)
+            if credit_wait_started is not None:
+                credit_wait_seconds += finished_at - credit_wait_started
+            logger.info("Sessao %s turno %s: TTS janela=%d enviados=%d primeiro_pcm_ms=%d "
+                        "intervalo_envio_max_ms=%d espera_fila_max_ms=%d espera_credito_ms=%d",
+                        self.session.session_id, self.session.turn_id, self.window, self.sent_bytes,
+                        int((first_sent_at - started_at) * 1000) if first_sent_at is not None else -1,
+                        int(max_send_gap * 1000), int(max_queue_wait * 1000), int(credit_wait_seconds * 1000))
 
     async def serve(self):
         self.session.esp_link = self
@@ -487,7 +526,7 @@ class ESPTransport:
                     or payload["device_id"] != settings.esp_device_id
                     or type(payload["playback"]) is not bool
                     or type(payload["playback_buffer_bytes"]) is not int
-                    or not (4096 if payload["playback"] else 640) <= payload["playback_buffer_bytes"] <= 16384):
+                    or not (4096 if payload["playback"] else 640) <= payload["playback_buffer_bytes"] <= MAX_PLAYBACK_BUFFER_BYTES):
                 raise ESPProtocolError("invalid_session_start")
             if self.transcriber is None:
                 raise ESPProtocolError("stt_unavailable")
@@ -495,8 +534,9 @@ class ESPTransport:
                     not payload["playback"] or self.engine.output.engine is None):
                 raise ESPProtocolError("esp32_playback_unavailable")
             session = await self.admit("esp32", "esp:" + settings.esp_device_id)
-            logger.info("Sessao %s: WS v1 admitido; saida=%s playback=%s",
-                        session.session_id, self.engine.output.mode_for(session), payload["playback"])
+            logger.info("Sessao %s: WS v1 admitido; saida=%s playback=%s janela=%d",
+                         session.session_id, self.engine.output.mode_for(session), payload["playback"],
+                         payload["playback_buffer_bytes"])
             connection = ESPConnection(self, ws, session, payload["playback"],
                                        payload["playback_buffer_bytes"])
             self.connections.add(connection)
