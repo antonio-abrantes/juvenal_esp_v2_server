@@ -1,0 +1,3 @@
+# Opcional: somente para selecionar ASR_BACKEND=parakeet. Baseline em requirements-asr.txt.
+numpy==1.26.4
+onnx-asr[cpu,hub]==0.12.0

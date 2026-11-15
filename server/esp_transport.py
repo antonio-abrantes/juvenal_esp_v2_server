@@ -322,7 +322,8 @@ class ESPConnection:
             await self.manager.engine.set_state("processing")
             started = time.monotonic()
             text = await self.manager.transcriber.transcribe_pcm(
-                audio, timeout=min(60, self.session.remaining))
+                audio, timeout=min(60, self.session.remaining),
+                context={"session_id": self.session.session_id, "turn_id": self.session.turn_id})
             self.session.check()
             logger.info("Sessao %s turno %s: STT %d ms, audio %d bytes",
                         self.session.session_id, self.session.turn_id,

@@ -26,7 +26,11 @@ else:
     local_input = profile == "local"
     local_output = profile == "local"
     tts = profile == "esp32"
-for needed, filename in [(asr, "requirements-asr.txt"),
+backend = str(values.get("ASR_BACKEND", "whisper")).strip().lower()
+if asr and backend not in {"whisper", "parakeet"}:
+    raise SystemExit("ASR_BACKEND: use whisper ou parakeet")
+asr_manifest = "requirements-asr-parakeet.txt" if backend == "parakeet" else "requirements-asr.txt"
+for needed, filename in [(asr, asr_manifest),
                          (local_input, "requirements-local-input.txt"),
                          (tts, "requirements-tts.txt"),
                          (local_output, "requirements-local-output.txt")]:

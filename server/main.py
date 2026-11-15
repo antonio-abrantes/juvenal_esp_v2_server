@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from config import PROJECT_ROOT, settings, esp_settings, hass_settings, number, tts_options, whisper_options
+from config import PROJECT_ROOT, settings, esp_settings, hass_settings, number, tts_options
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -22,6 +22,7 @@ from legacy_esp import serve_legacy_esp
 from llm_client import LLMClient
 from response_output import ResponseOutput
 from runtime import CapacityBusy
+from diagnostics import log_text
 from tools.home_assistant import AutomationTools
 from esp_transport import ESPTransport
 
@@ -221,10 +222,12 @@ async def lifespan(app):
             logger.warning("Motor de saída indisponível; veja dependências/modelo. Sem fallback de destino.")
     if settings.stt_enabled:
         try:
-            from transcriber import WhisperTranscriber
-            transcriber = await asyncio.to_thread(WhisperTranscriber, **whisper_options())
-        except Exception:
-            logger.warning("STT indisponível; entrada textual continua disponível.")
+            from transcriber import create_transcriber
+            transcriber = await asyncio.to_thread(create_transcriber)
+        except Exception as error:
+            logger.warning("STT indisponível (%s): %s; confira ASR_BACKEND, dependências e modelo. "
+                           "Sem troca automática de backend; entrada textual continua disponível.",
+                           type(error).__name__, log_text(error, limit=1024))
     tools = AutomationTools(catalog, llm.provider)
     engine = ConversationEngine(llm, output, broadcast, set_state, transcriber, tools=tools)
     esp_transport = ESPTransport(engine, transcriber, admit, return_to_idle)
