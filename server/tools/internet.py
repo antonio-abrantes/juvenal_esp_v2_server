@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+import unicodedata
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -179,6 +180,12 @@ class InternetTools:
 
     def _weather(self, http, args):
         location = args.get("location") or self.config.location
+        if self.config.location and location and "," not in location:
+            def city_key(value):
+                return " ".join("".join(c for c in unicodedata.normalize("NFKD", value.casefold())
+                    if not unicodedata.combining(c)).split())
+            if city_key(location) == city_key(self.config.location.split(",", 1)[0]):
+                location = self.config.location
         if not location:
             raise QueryError("weather_location_required", "Para qual cidade e estado você quer saber o clima?")
         geo, _ = http.json("https://geocoding-api.open-meteo.com/v1/search", params={
