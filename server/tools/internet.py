@@ -117,10 +117,21 @@ class InternetTools:
                     issue = "search_dependency_missing"
             results[name] = {"available": not bool(issue), "reason": issue or None}
         return {"enabled": c.enabled, "search_provider": c.search_provider, "features": results,
+                "weather_default_configured": bool(c.location),
                 "available": any(x["available"] for x in results.values())}
+
+    def location_context(self):
+        return {"weather_default_location": self.config.location or None,
+                "weather_default_city": self.config.location.split(",", 1)[0].strip() or None}
 
     def register(self, registry):
         for name, (description, schema) in SCHEMAS.items():
+            if name == "consultar_clima":
+                description += " Contexto geográfico configurado: " + json.dumps(
+                    self.location_context(), ensure_ascii=False) + "."
+                if self.config.location:
+                    description += (" location é opcional: pergunta de clima/temperatura sem outro destino "
+                        "usa weather_default_location. Não peça cidade ou estado já configurados.")
             registry.register(ToolDefinition(name, description, schema, self.execute,
                 lambda session, name=name: self.trusted(session) and
                     self.capabilities()["features"][name]["available"], self.config.timeout,
@@ -131,7 +142,20 @@ class InternetTools:
         names = [name for name, item in caps["features"].items() if item["available"] and self.trusted(session)]
         status = "; ".join(name + ": " + ("disponível" if name in names else str(item["reason"] or "identity_not_allowed"))
                            for name, item in caps["features"].items())
-        return names, POLICY + "\nDisponibilidade das consultas: " + status
+        context = json.dumps(self.location_context(), ensure_ascii=False)
+        location_contract = ""
+        if self.config.location:
+            location_contract = (
+                "\nContrato de consultar_clima: perguntas como 'qual a temperatura hoje?', "
+                "'qual o clima hoje?', 'vai chover amanhã?' e 'como está o tempo aqui?', "
+                "sem outro destino estabelecido na conversa, usam weather_default_location. "
+                "Chame a ferramenta com location omitido ou com o local padrão completo; "
+                "não pergunte qual cidade/estado. Quando o pedido informar somente "
+                "weather_default_city, o estado/país já configurado resolve os homônimos. "
+                "Outro destino explicitamente informado ou estabelecido no contexto da pergunta "
+                "tem prioridade. Se a consulta falhar, informe a falha em vez de pedir novamente "
+                "um local que já está configurado.")
+        return names, POLICY + "\nContexto geográfico configurado: " + context + location_contract + "\nDisponibilidade das consultas: " + status
 
     async def execute(self, call, session):
         session.internet_evidence = True
