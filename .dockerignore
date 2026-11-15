@@ -5,6 +5,7 @@
 !requirements-core.txt
 !requirements-asr.txt
 !requirements-tts.txt
+!requirements-internet.txt
 !server/
 !server/*.py
 !server/tools/

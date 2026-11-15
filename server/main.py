@@ -23,7 +23,7 @@ from llm_client import LLMClient
 from response_output import ResponseOutput
 from runtime import CapacityBusy
 from diagnostics import log_text
-from tools.home_assistant import AutomationTools
+from tools.coordinator import ToolsCoordinator
 from esp_transport import ESPTransport
 
 logging.basicConfig(level=logging.INFO,
@@ -228,10 +228,11 @@ async def lifespan(app):
             logger.warning("STT indisponível (%s): %s; confira ASR_BACKEND, dependências e modelo. "
                            "Sem troca automática de backend; entrada textual continua disponível.",
                            type(error).__name__, log_text(error, limit=1024))
-    tools = AutomationTools(catalog, llm.provider)
+    tools = ToolsCoordinator(catalog, llm.provider)
     engine = ConversationEngine(llm, output, broadcast, set_state, transcriber, tools=tools)
     esp_transport = ESPTransport(engine, transcriber, admit, return_to_idle)
     capability = await tools.capability()
+    logger.info("Consultas internet: %s", capability["internet"])
     logger.info("Home Assistant: habilitado=%s modo=%s exige_catalogo=%s log_conteudo=%s",
                 hass_settings.enabled, hass_settings.mode, hass_settings.require_catalog,
                 hass_settings.log_content)

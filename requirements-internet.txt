@@ -1,0 +1,2 @@
+# Biblioteca nativa opcional para busca textual/notícias; sem extras API/MCP.
+ddgs==9.16.1

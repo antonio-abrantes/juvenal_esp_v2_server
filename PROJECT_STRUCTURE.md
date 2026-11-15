@@ -8,6 +8,9 @@
 | server/automation_catalog.py | Catálogo Markdown validado, revisão, backup e escrita atômica |
 | server/catalog_api.py | Administração autenticada e controle de origem/revisão do catálogo |
 | server/tools/registry.py | Contratos, validação e registro explícito de ferramentas |
+| server/tools/coordinator.py | Compõe Home Assistant e consultas de internet com disponibilidade independente |
+| server/tools/internet.py / internet_http.py | Clima, PTAX, resultados/fontes/cache e leitura HTTP pública limitada |
+| server/tools/internet_search.py | Busca textual/notícias DuckDuckGo via DDGS opcional no Python, sem serviço auxiliar |
 | server/tools/home_assistant.py | Permissões, propostas de confirmação e adaptador n8n sem reenvio |
 | server/esp_transport.py | WS v1 /ws/esp, PCM/VAD, limites, sessões e créditos/ACK de playback |
 | server/pcm_stream.py | Conversão contínua da taxa/canais nativos Piper para PCM16 mono 16 kHz |
@@ -25,6 +28,7 @@
 | system_prompt.md | Cópia histórica preservada; não carregada por padrão |
 | .env / .env.example | Configuração protegida real / template sem segredos |
 | requirements*.txt | Base e capacidades; requirements.txt mantém o perfil local completo |
+| requirements-internet.txt | Dependência opcional DDGS para busca; clima/câmbio não dependem dela |
 | scripts/install.* | Venv/dependências por perfil; preservam configuração, sem startup |
 | scripts/install_profile.py | Seleção de manifests sem importar a aplicação |
 | scripts/render_service.py | Gera unit com usuário/caminhos reais no Linux, sem instalar/iniciar |

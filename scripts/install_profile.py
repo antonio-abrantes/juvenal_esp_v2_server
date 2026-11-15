@@ -33,6 +33,8 @@ asr_manifest = "requirements-asr-parakeet.txt" if backend == "parakeet" else "re
 for needed, filename in [(asr, asr_manifest),
                          (local_input, "requirements-local-input.txt"),
                          (tts, "requirements-tts.txt"),
-                         (local_output, "requirements-local-output.txt")]:
+                         (local_output, "requirements-local-output.txt"),
+                         (enabled("INTERNET_ENABLED", "false") and enabled("WEB_SEARCH_ENABLED", "true"),
+                          "requirements-internet.txt")]:
     if needed:
         print(filename)

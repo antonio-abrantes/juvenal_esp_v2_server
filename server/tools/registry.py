@@ -95,6 +95,7 @@ class ToolDefinition:
     handler: object
     permission: object
     timeout: float = 15
+    read_only: bool = False
 
     def schema(self):
         return {"type": "function", "function": {"name": self.name,
@@ -110,6 +111,10 @@ class ToolRegistry:
                 or definition.name in self.definitions):
             raise ValueError("invalid_tool_registration")
         self.definitions[definition.name] = definition
+
+    def is_read_only(self, name):
+        definition = self.definitions.get(name)
+        return bool(definition and definition.read_only)
 
     async def execute(self, call, session):
         definition = self.definitions.get(call.name)
@@ -135,8 +140,12 @@ class ToolRegistry:
         except asyncio.CancelledError:
             raise
         except TimeoutError:
+            if definition.read_only:
+                return ToolResult("failed", "query_timeout", "A consulta excedeu o prazo; não consegui confirmar a informação atual.")
             return ToolResult("unknown", "tool_timeout",
                               "Não foi possível confirmar o resultado. A ação não será repetida.")
         except Exception:
+            if definition.read_only:
+                return ToolResult("failed", "query_failed", "Não consegui obter dados dessa fonte agora.")
             return ToolResult("unknown", "tool_failed",
                               "Não foi possível confirmar o resultado da ferramenta. Não vou repetir.")

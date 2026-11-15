@@ -31,9 +31,9 @@ RUN apt-get update \
     && mkdir -p /config /data /cache \
     && chown 10001:10001 /config /data /cache
 
-COPY requirements-core.txt requirements-asr.txt requirements-tts.txt ./
+COPY requirements-core.txt requirements-asr.txt requirements-tts.txt requirements-internet.txt ./
 RUN python -m pip install --no-cache-dir --prefer-binary \
-    -r requirements-core.txt -r requirements-asr.txt -r requirements-tts.txt
+    -r requirements-core.txt -r requirements-asr.txt -r requirements-tts.txt -r requirements-internet.txt
 
 COPY server/ ./server/
 COPY frontend/ ./frontend/

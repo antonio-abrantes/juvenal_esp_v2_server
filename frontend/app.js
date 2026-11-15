@@ -127,6 +127,23 @@ function handleEvent(msg) {
       }
       break;
 
+    case "information_sources": {
+      const data = msg.data || {};
+      const sources = data.sources || (data.url ? [{url: data.url, title: data.source}] : []);
+      const box = addMessage("system", `Fontes consultadas${data.cached ? " (cache)" : ""}: `);
+      for (const source of sources.slice(0, 3)) {
+        try {
+          const url = new URL(source.url);
+          if (!["http:", "https:"].includes(url.protocol)) continue;
+          const link = document.createElement("a");
+          link.href = url.href; link.target = "_blank"; link.rel = "noopener noreferrer";
+          link.textContent = (source.title || url.hostname) + " ";
+          box.appendChild(link);
+        } catch (_) { /* Referência inválida não interrompe o painel. */ }
+      }
+      break;
+    }
+
     case "tool_result":
       if (msg.status === "unknown") {
         addMessage("system", "O resultado da automação é incerto. Nenhum reenvio automático será feito.");

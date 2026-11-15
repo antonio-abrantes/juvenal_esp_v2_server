@@ -36,7 +36,7 @@ def create_catalog_router(catalog, authenticated, get_tools):
 
     async def payload(snapshot=None, error=None):
         tools = get_tools()
-        capability = (await tools.capability() if tools else
+        capability = (await tools.catalog_capability() if tools else
                       {"available": False, "reason": "server_starting", "catalog_valid": False})
         return {"schema_version": 1, "revision": snapshot.revision if snapshot else error.revision,
                 "automations": snapshot.automations if snapshot else [],

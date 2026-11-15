@@ -207,6 +207,12 @@ O catálogo do botão Automações permanece disponível com HASS_REQUIRE_CATALO
 
 A persona personalizável prioriza respostas curtas, recusa textos deliberadamente longos e interpreta erros claros de transcrição pelo contexto. Quando faltar clareza, faz uma pergunta breve. Consulte [personalização](docs/configuration.md#personalizar-a-persona).
 
+## Consultas à internet
+
+O módulo opcional oferece **clima/temperatura pela Open-Meteo**, **câmbio oficial PTAX pelo Banco Central** e **pesquisa de notícias/eventos pelo DuckDuckGo, via biblioteca Python DDGS**, com fontes, datas, cache curto e resposta pelo destino já configurado. Funciona com HA desativado e usa o mesmo provedor de IA/ASR. Instale `requirements-internet.txt`, ative `INTERNET_ENABLED=true` no `.env` e configure `WEATHER_DEFAULT_LOCATION`. `WEB_SEARCH_PROVIDER=duckduckgo` é o padrão de busca; o módulo inteiro permanece desativado até a configuração.
+
+O painel Python mostra as fontes; o ESP recebe a resposta em voz pelo WS existente. PTAX é referência datada, não preço de negociação ao vivo. **A busca roda no Python: não precisa de container, serviço auxiliar nem chave de API. No Orange Pi, manter execução nativa/systemd e nunca subir containers do Juvenal ou auxiliares.** Implementação entregue, ainda sem validação funcional desta etapa. Veja [configuração, instalação, comandos e verificações manuais](docs/internet.md).
+
 ## Próximas entregas e validação
 
 O ESP principal já forneceu áudio e recebeu respostas em sessões reais; a continuidade também foi informada como funcionando. No ambiente atual, entrada vem do ESP e AUDIO_OUTPUT_MODE=esp32; LOCAL_VOICE_ENABLED=false desliga somente o microfone do computador. ESP_DEVICE_ID/ESP_DEVICE_TOKEN devem corresponder nos dois projetos. Não exponha token em URL. O experimental WAV permanece separado. A etapa Home Assistant/persona foi encerrada por aceite do usuário; os cenários complementares estão separados no [guia dos dois modos](docs/home-assistant.md).

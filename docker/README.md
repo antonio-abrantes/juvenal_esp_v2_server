@@ -1,5 +1,7 @@
 # Juvenal Server em Docker
 
+**Limite de implantação:** estes exemplos destinam-se à VPS/outros hosts autorizados. No Orange Pi do projeto, manter Juvenal nativo em venv/systemd; nunca subir containers do Juvenal ou auxiliares. A busca DuckDuckGo usa DDGS dentro do Python, sem container de buscador.
+
 Imagem CPU para **linux/amd64** e **linux/arm64**, com Python3.11, Whisper e Piper. Um mesmo nome/tag contém o manifest das duas arquiteturas; Docker escolhe a plataforma do host. Execução nativa e scripts existentes continuam disponíveis.
 
 O container é headless: microfone/wake e reprodução ficam no ESP. LOCAL_VOICE_ENABLED=false, WHISPER_DEVICE=cpu e TTS_BACKEND=piper são fixados nos exemplos. AUDIO_OUTPUT_MODE aceita esp32 ou endpoint; áudio local do host permanece no modo nativo.

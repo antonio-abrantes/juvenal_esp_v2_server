@@ -56,6 +56,7 @@ class Interaction:
     hass_delivery: str = ""
     hass_external_accepted: bool = False
     hass_http_status: int | None = None
+    internet_evidence: bool = False
 
     @property
     def remaining(self):
@@ -242,7 +243,8 @@ class ConversationEngine:
         try:
             for call in calls:
                 session.check()
-                if results and results[-1].status != "success":
+                definition = self.tools.registry.definitions.get(call.name)
+                if results and results[-1].status != "success" and not (definition and definition.read_only):
                     result = ToolResult("denied", "batch_stopped",
                                         "Outra ação desta rodada precisa de atenção; nada foi enviado.")
                 else:
@@ -252,6 +254,8 @@ class ConversationEngine:
                               "content": result.content()})
                 await self.event(session, "tool_result", name=call.name,
                                  status=result.status, code=result.code)
+                if definition and definition.read_only and result.status == "success":
+                    await self.event(session, "information_sources", name=call.name, data=result.data)
         finally:
             # Cancelamento não pode deixar chamadas sem resultado no histórico.
             for call in calls[len(results):]:
@@ -261,6 +265,7 @@ class ConversationEngine:
         return results
 
     async def _generate_response(self, text, session, trace):
+        session.internet_evidence = False
         if self.tools and session.context.pending_action is not None:
             pending = session.context.pending_action
             call = ToolCall("confirm_" + uuid4().hex, "home_assistant", pending.arguments)
@@ -319,13 +324,14 @@ class ConversationEngine:
                 await self.event(session, "assistant_token", token=response)
                 return response
             for call, result in zip(calls, results):
-                if result.status == "success":
+                if result.status == "success" and not self.tools.registry.is_read_only(call.name):
                     label = call.arguments.get("automation_id", call.name)
                     if not isinstance(label, str) or len(label) > 64:
                         label = call.name
                     if label not in confirmed:
                         confirmed.append(label)
-            interrupted = next((item for item in results if item.status != "success"), None)
+            interrupted = next((item for call, item in zip(calls, results)
+                if item.status != "success" and not self.tools.registry.is_read_only(call.name)), None)
             if interrupted:
                 summary = "".join("Execução confirmada para " + label + ". " for label in confirmed)
                 response = summary + interrupted.message
