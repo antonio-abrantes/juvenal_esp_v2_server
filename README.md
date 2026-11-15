@@ -1,6 +1,6 @@
 # Juvenal Server
 
-Servidor Python do assistente de voz **Juvenal**, desenvolvido por Antônio Abrantes. Centraliza transcrição, conversa com IA, contexto e entrega da resposta, integrando um dispositivo **ESP32-S3** independente do Home Assistant.
+Servidor Python do assistente de voz **Juvenal**, desenvolvido por Antônio Abrantes. Centraliza transcrição, conversa com IA, contexto e entrega da resposta. Pode funcionar como **assistente completo no próprio computador**, com microfone e alto-falantes locais, ou integrar um dispositivo **ESP32-S3**. Home Assistant é opcional em ambos os modos.
 
 Este componente usa repositório próprio: **`juvenal_esp_v2_server`**, associado ao firmware `juvenal_esp_v2`. A pasta local do servidor permanece `juvenal_server`; firmware e servidor têm históricos separados.
 
@@ -8,13 +8,13 @@ Este componente usa repositório próprio: **`juvenal_esp_v2_server`**, associad
 
 **Etapa Home Assistant e persona concluída em 14/11/2026**, por aceite do usuário após informar que a integração passou a funcionar. A entrega inclui dois modos HA, comandos sem cadastro obrigatório, logs de POST e persona breve com interpretação de transcrição imperfeita. O aceite não comprova individualmente todos os modos e cenários de falha; as verificações complementares ficam no [guia HA](docs/home-assistant.md).
 
-O núcleo de conversa e a entrada ESP por WebSocket já têm evidências de STT/IA, playback e continuidade. LEDs de inicialização e boca por amplitude foram aprovados no hardware. A operação Linux/systemd e outras verificações específicas continuam pendentes, separadas desta etapa.
+O núcleo de conversa e a entrada ESP por WebSocket já têm evidências de STT/IA, playback e continuidade. LEDs de inicialização e boca por amplitude foram aprovados no hardware. Em 15/11/2026, o usuário também demonstrou execução nativa com systemd no Orange Pi e resposta ao ESP usando Parakeet PT-BR; verificações prolongadas de robustez continuam separadas desse aceite funcional.
 
 O firmware experimental **Juvenal Visual v0.4**, em juvenal_http_teste, permanece WAV/HTTP POST. O cliente integrado está no principal juvenal_esp, com ESP-IDF **5.4.4**, face, painel e diagnóstico WAV preservados. A integração HA é executada no servidor e não exige nova alteração de firmware.
 
 ## Como a conversa funciona
 
-A entrada pode vir do ESP por WS ou do diagnóstico local. No ambiente atual, LOCAL_VOICE_ENABLED=false: wake e microfone ficam no ESP; o Python recebe PCM, executa Whisper/IA e entrega no destino configurado. A entrada local do computador continua opcional.
+A entrada pode vir do microfone do próprio computador ou do ESP por WS. Na instalação atual do autor, LOCAL_VOICE_ENABLED=false: wake e microfone ficam no ESP; o Python recebe PCM, executa o ASR selecionado (Whisper ou Parakeet), consulta a IA e entrega no destino configurado. Para operar somente no computador, use o modo descrito abaixo.
 
 As integrações têm responsabilidades distintas:
 
@@ -37,11 +37,11 @@ Com OpenAI como provedor e saída `endpoint`, a resposta é gerada pela OpenAI e
 
 No modo `endpoint`, o formato padrão é JSON `{"texto": "resposta final da IA"}`; há opção de texto puro. Status aceito confirma entrega HTTP conforme a configuração, sem confirmar reprodução de fala. Não há reenvio ou mudança automática de destino após falha.
 
-`LOCAL_VOICE_ENABLED` controla wake/microfone do host, `STT_ENABLED` habilita Whisper e `AUDIO_OUTPUT_DEVICE` escolhe somente a reprodução local. No modo endpoint, o aceite HTTP conclui a entrega do turno, sem presumir que um receptor externo terminou de falar. Na extensão WS v1, o ESP pode retomar a escuta na mesma conexão após essa entrega.
+`LOCAL_VOICE_ENABLED` controla wake/microfone do host, `STT_ENABLED` habilita a transcrição com o backend selecionado e `AUDIO_OUTPUT_DEVICE` escolhe somente a reprodução local. No modo endpoint, o aceite HTTP conclui a entrega do turno, sem presumir que um receptor externo terminou de falar. Na extensão WS v1, o ESP pode retomar a escuta na mesma conexão após essa entrega.
 
 ## Instalação e execução
 
-Use **Python 3.11** como referência. Windows já teve execução manual comprovada; scripts e caminhos Linux estão preparados, mas dependências do host e operação com systemd ainda precisam de validação.
+Use **Python 3.11** como referência. Há execução manual comprovada no Windows e execução nativa com systemd no Orange Pi 3B/Debian 12 ARM64. A compatibilidade e o desempenho em outros hosts precisam de avaliação própria.
 
 Execute os comandos a partir da raiz deste repositório. Em instalação nova, prepare a configuração e um prompt local sem substituir arquivos existentes.
 
@@ -94,7 +94,67 @@ bash scripts/start.sh
 
 O instalador preserva o `.env` existente e não inicia a aplicação ou outros serviços. O perfil `auto` escolhe dependências conforme a configuração; perfis explícitos `text`, `endpoint`, `local` e `esp32` escolhem pacotes e não alteram o `.env`. O perfil `endpoint` é para áudio recebido sem captura local; para wake/microfone no host, use `auto` com as opções acima.
 
-Whisper e Piper podem baixar modelos ao iniciar a capacidade correspondente. A saída endpoint comum dispensa Piper; a API HA com resposta no ESP precisa dele, mesmo quando a saída geral é endpoint. Detalhes: [configuração](docs/configuration.md) e [preparação Linux](docs/homelab-linux-setup.md).
+Whisper, Parakeet e Piper podem baixar modelos ao iniciar a capacidade correspondente. A saída endpoint comum dispensa Piper; a API HA com resposta no ESP precisa dele, mesmo quando a saída geral é endpoint. Detalhes: [configuração](docs/configuration.md) e [preparação Linux](docs/homelab-linux-setup.md).
+
+## Usar somente no Windows, sem ESP32
+
+O Juvenal também funciona como uma aplicação de voz independente no próprio Windows: **microfone do computador → wake word “Juvenal” → transcrição → IA → Piper → alto-falantes ou fones do computador**. O Python detecta a palavra de ativação, captura a pergunta e reproduz a resposta; não é necessário conectar um ESP32 ou instalar Home Assistant. O painel é acessado no próprio PC em [http://127.0.0.1:8000](http://127.0.0.1:8000).
+
+No `.env` privado desse computador, configure:
+
+~~~dotenv
+LOCAL_VOICE_ENABLED=true
+STT_ENABLED=true
+AUDIO_OUTPUT_MODE=local
+ASR_BACKEND=parakeet
+TTS_BACKEND=piper
+PIPER_MODEL=pt_BR-faber-medium
+WAKE_WORD_MODEL=models/juvehnal.tflite
+AUDIO_INPUT_DEVICE=
+AUDIO_OUTPUT_DEVICE=
+~~~
+
+`ASR_BACKEND=whisper` também é suportado; nesse caso, continuam valendo as opções `WHISPER_*`. Manter as variáveis de dispositivo vazias usa a seleção padrão do sistema, com as tentativas de compatibilidade locais existentes. Para escolher explicitamente, informe o índice numérico do dispositivo em cada variável. Habilite o acesso ao microfone nas permissões do Windows para aplicativos de área de trabalho.
+
+Disponibilize o modelo personalizado de wake word `juvehnal.tflite` no caminho configurado; ele não acompanha o clone. É o mesmo artefato de reconhecimento já utilizado pelo projeto, mas a detecção passa a acontecer no computador. Os modelos ASR e Piper são carregados pelas respectivas bibliotecas e podem ser baixados na primeira inicialização.
+
+Comandos no PowerShell, **a partir da raiz deste repositório** (`projects/juvenal_server` no workspace):
+
+~~~powershell
+.\scripts\install.ps1 -DependencyProfile local
+.\scripts\start.ps1
+~~~
+
+O perfil `local` instala as capacidades de microfone/wake word, o ASR selecionado e o Piper/player local. Ele preserva o `.env` existente e não escolhe o modo por você: salve a configuração acima antes de instalar/iniciar. O script usa a venv do servidor, sem exigir ativação manual. Na inicialização, confira `saída=local entrada_local=True stt=True`, a ausência de avisos de indisponibilidade do motor de voz e a ativação da wake word; depois diga “Juvenal” e aguarde a escuta para fazer a pergunta. O indicador `tts` em `/health` ajuda a conferir a carga do motor, enquanto o teste de voz confirma os dispositivos de áudio reais.
+
+A configuração de IA continua sendo `LLM_PROVIDER` e suas variáveis existentes. O processamento no computador não torna uma API remota offline: provedores externos precisam de internet; Ollama é uma opção de provedor local, se instalado/configurado separadamente. A integração Home Assistant permanece opcional (`HASS_ENABLED=false` a desativa); no modo HA `text_endpoint`, a fala dessa ação continua sendo responsabilidade do receptor externo, conforme seu contrato.
+
+Para retornar ao uso pelo ESP, selecione `LOCAL_VOICE_ENABLED=false` e `AUDIO_OUTPUT_MODE=esp32` no `.env` da instalação correspondente e reinicie o Python. A troca entre esses modos não requer alterar o firmware já compatível. A imagem Docker publicada continua destinada ao perfil headless do ESP; os comandos desta seção são para execução nativa no Windows.
+
+## Transcrição: Whisper ou Parakeet PT-BR
+
+Os dois backends podem permanecer instalados; apenas o selecionado é carregado na memória. A ausência de `ASR_BACKEND` mantém `whisper` como padrão de compatibilidade. Na instalação do autor, o escolhido para uso atual é **Parakeet PT-BR ONNX/INT8**:
+
+~~~dotenv
+ASR_BACKEND=parakeet
+PARAKEET_MODEL=alefiury/parakeet-tdt-v3-ptBR-30s-onnx
+~~~
+
+Para uma instalação existente, acrescente a dependência opcional usando o Python da venv do servidor:
+
+~~~powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-asr-parakeet.txt
+~~~
+
+~~~bash
+.venv/bin/python -m pip install -r requirements-asr-parakeet.txt
+~~~
+
+Reinicie o Python após editar o `.env`; na instalação nativa com a unit fornecida, use `sudo systemctl restart juvenal-server.service`. Para voltar, selecione `ASR_BACKEND=whisper`, mantendo as opções `WHISPER_*`. A troca não exige alteração no ESP. No Windows, `start.ps1 -AsrBackend parakeet` permite escolha temporária; sem esse parâmetro, vale o `.env`. A imagem Docker atual inclui somente Whisper; a dependência opcional descrita aqui foi avaliada na execução nativa.
+
+**Resultado observado pelo autor em 15/11/2026:** no Orange Pi 3B, RK3566 até 1,8 GHz, 8 GB de RAM, Debian 12 ARM64/Python 3.11, o Parakeet apresentou reconhecimento percebido como bem melhor e menor tempo de transcrição que o **faster-whisper base, CPU/INT8**, usado inicialmente. Nos logs, o Whisper anterior levou **4,34–5,43 s**; oito transcrições com texto do Parakeet levaram **1,72–2,99 s**, com média de **2,36 s**. As oito respostas tiveram playback confirmado pelo ESP. A primeira captura do Parakeet retornou texto vazio e o servidor retomou a escuta.
+
+São observações de uso com gravações diferentes, não um benchmark controlado nem garantia para outros equipamentos. Os cerca de **664 MB** vistos no download são do checkpoint Parakeet INT8, não uma medição de RAM nem o tamanho do Whisper anterior. Permanecem limitações de reconhecimento, como nomes próprios; a comparação com os mesmos WAVs está no [roteiro de ASR](docs/comparacao-asr.md). Créditos e licença do checkpoint: [alefiury/parakeet-tdt-v3-ptBR-30s-onnx](https://huggingface.co/alefiury/parakeet-tdt-v3-ptBR-30s-onnx); runtime [onnx-asr](https://github.com/istupakov/onnx-asr).
 
 ## Docker, GHCR e Portainer
 
@@ -110,7 +170,7 @@ Veja [publicação, volumes, persona, Portainer e ajustes WSS do ESP](docker/REA
 
 Para enviar a resposta ao webhook, use `AUDIO_OUTPUT_MODE=endpoint` e preencha `AUDIO_TEXT_ENDPOINT_*`. Para ouvir pelo computador, use `AUDIO_OUTPUT_MODE=local`, configure Piper/dispositivo e instale as dependências locais correspondentes. Reinicie o processo após mudar o `.env`.
 
-Para retornar áudio ao ESP, com a montagem já validada (GPIO15/16/17, USB5V/GND comum), use o speaker habilitado no header privado do firmware, defina `AUDIO_OUTPUT_MODE=esp32`, `TTS_BACKEND=piper`, configure `PIPER_MODEL` e instale o perfil `esp32` (Whisper + Piper, sem player do host). Reinicie o servidor e grave o firmware atualizado manualmente. Origem textual/microfone do host sem vínculo WS não consegue receber essa saída e retorna indisponibilidade; não existe fallback. Para voltar ao webhook, restaure `AUDIO_OUTPUT_MODE=endpoint` e reinicie; não precisa habilitar speaker no ESP.
+Para retornar áudio ao ESP, com a montagem já validada (GPIO15/16/17, USB5V/GND comum), use o speaker habilitado no header privado do firmware, defina `AUDIO_OUTPUT_MODE=esp32`, `TTS_BACKEND=piper`, configure `PIPER_MODEL` e instale o perfil `esp32` (ASR selecionado + Piper, sem player do host). Reinicie o servidor; a integração inicial exige firmware compatível já gravado, enquanto trocar somente o backend ASR dispensa novo flash. Origem textual/microfone do host sem vínculo WS não consegue receber essa saída e retorna indisponibilidade; não existe fallback. Para voltar ao webhook, restaure `AUDIO_OUTPUT_MODE=endpoint` e reinicie; não precisa habilitar speaker no ESP.
 
 ## Painel, configuração e privacidade
 
@@ -128,7 +188,7 @@ Consulte a [estrutura dos módulos](PROJECT_STRUCTURE.md), o [contrato WS v1 e m
 
 O modelo que reconhece a palavra **“Juvenal”**, identificado nos arquivos como `juvehnal`, foi treinado com os recursos do projeto **[TaterTotterson/Tater-Wake-Words](https://github.com/TaterTotterson/Tater-Wake-Words)**. Agradecemos ao autor pela disponibilização do projeto e dos recursos para criação de wake words personalizadas.
 
-Esse modelo reconhece a palavra de ativação. A transcrição da fala seguinte é responsabilidade do Whisper; a resposta conversacional vem do provedor configurado. O treinamento não é executado pelo Juvenal Server. Preserve os avisos e licenças aplicáveis aos modelos e componentes utilizados.
+Esse modelo reconhece a palavra de ativação. A transcrição da fala seguinte é responsabilidade do backend ASR selecionado (Whisper ou Parakeet); a resposta conversacional vem do provedor configurado. O treinamento não é executado pelo Juvenal Server. Preserve os avisos e licenças aplicáveis aos modelos e componentes utilizados.
 
 ## Home Assistant
 
@@ -136,7 +196,7 @@ A integração é opcional e roda no Python: Juvenal encaminha o comando residen
 
 | HASS_MODE | Execução e resposta |
 |---|---|
-| api — padrão | POST em /api/conversation/process com Bearer e agente configurável. O speech retornado é sintetizado e reproduzido no ESP de origem, sem reescrita por outro LLM |
+| api - padrão | POST em /api/conversation/process com Bearer e agente configurável. O speech retornado é sintetizado no servidor e reproduzido no ESP de origem ou no computador, conforme o modo local. Sem reescrita por outro LLM |
 | text_endpoint | Envia comando ao receptor configurado, que executa e fala remotamente. Essa ação não produz TTS no ESP, mesmo com AUDIO_OUTPUT_MODE=esp32 |
 
 HASS_ENABLED liga/desliga o módulo; HASS_API_ENDPOINT, HASS_API_TOKEN e HASS_AGENT_ID configuram a API. No modo alternativo, use HASS_TEXT_ENDPOINT_URL e o campo JSON HASS_TEXT_ENDPOINT_FIELD. Os dados ficam no .env privado do servidor; alterar modo exige apenas reiniciar Python, sem regravar o ESP. HASS_* é independente de AUDIO_TEXT_ENDPOINT_URL, que entrega respostas comuns.
@@ -151,7 +211,7 @@ A persona personalizável prioriza respostas curtas, recusa textos deliberadamen
 
 O ESP principal já forneceu áudio e recebeu respostas em sessões reais; a continuidade também foi informada como funcionando. No ambiente atual, entrada vem do ESP e AUDIO_OUTPUT_MODE=esp32; LOCAL_VOICE_ENABLED=false desliga somente o microfone do computador. ESP_DEVICE_ID/ESP_DEVICE_TOKEN devem corresponder nos dois projetos. Não exponha token em URL. O experimental WAV permanece separado. A etapa Home Assistant/persona foi encerrada por aceite do usuário; os cenários complementares estão separados no [guia dos dois modos](docs/home-assistant.md).
 
-Não foram individualmente comprovados o modo HA alternativo, alternância/desativação e todos os erros; esses cenários continuam como verificações complementares. Volume/persistência nas condições não relatadas, limites/cancelamento e operação Linux/systemd permanecem pendências próprias. Os recebimentos HTTP 200 anteriores e os playback confirmados no ESP continuam evidências das integrações correspondentes.
+Não foram individualmente comprovados o modo HA alternativo, alternância/desativação e todos os erros; esses cenários continuam como verificações complementares. Volume/persistência nas condições não relatadas, limites/cancelamento, recuperação prolongada e início após reboot do host continuam pendências próprias. A execução nativa Linux/systemd com Parakeet foi observada no Orange Pi em 15/11; isso não comprova todos os cenários operacionais. Os recebimentos HTTP 200 anteriores e os playback confirmados no ESP continuam evidências das integrações correspondentes.
 
 A validação funcional é manual, pelo usuário. Não há suíte automatizada de testes ou implantação automática nesta entrega.
 

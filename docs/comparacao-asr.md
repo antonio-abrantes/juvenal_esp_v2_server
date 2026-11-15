@@ -2,7 +2,7 @@
 
 O padrão continua `ASR_BACKEND=whisper`, usando os valores `WHISPER_*` existentes. O candidato é `ASR_BACKEND=parakeet`: modelo `alefiury/parakeet-tdt-v3-ptBR-30s-onnx`, INT8, CPU, via `onnx-asr`. O modelo é carregado uma vez por processo. Não há troca automática para outro backend em caso de erro.
 
-Esta entrega prepara a comparação; ainda não comprova ganho de velocidade ou qualidade no Windows ou no RK3566. O VAD de captura, silêncio, WebSocket, firmware, LLM, ferramentas e TTS permanecem com o comportamento existente. O Whisper preserva seu VAD interno e demais parâmetros; o Parakeet recebe o mesmo PCM inteiro, até 30 segundos, sem outro VAD, prompt de contexto ou seleção de idioma. São pipelines ASR diferentes, identificados nos resultados.
+Há evidência posterior de uso real no Windows e no Orange Pi/RK3566, com melhora relatada pelo usuário; veja a seção 6. Isso ainda não substitui a comparação controlada com os mesmos WAVs. O VAD de captura, silêncio, WebSocket, firmware, LLM, ferramentas e TTS permanecem com o comportamento existente. O Whisper preserva seu VAD interno e demais parâmetros; o Parakeet recebe o mesmo PCM inteiro, até 30 segundos, sem outro VAD, prompt de contexto ou seleção de idioma. São pipelines ASR diferentes, identificados nos resultados.
 
 ## 1. Preparar no Windows
 
@@ -103,6 +103,16 @@ Para voltar à baseline, sem coleta de arquivos:
 Sem argumentos, `start.ps1` respeita o `.env`; ausência de `ASR_BACKEND` significa Whisper. Para escolha permanente, adicionar `ASR_BACKEND=parakeet` ao `.env` privado, após instalar as dependências opcionais. `PARAKEET_MODEL` permite outro checkpoint compatível; `PARAKEET_CPU_THREADS=0` deixa o runtime escolher, sem prometer melhor desempenho. Ajustar threads deve ser uma comparação posterior separada.
 
 Linux usa as mesmas variáveis de ambiente, por exemplo `ASR_BACKEND=parakeet bash scripts/start.sh`, se as dependências já estiverem preparadas. Os instaladores com perfil `auto` selecionam `requirements-asr-parakeet.txt` quando `ASR_BACKEND=parakeet`; na ausência da variável continuam no manifesto Whisper. A imagem Docker existente continua incluindo somente Whisper nesta entrega; este roteiro não solicita imagem/deploy novo.
+
+## 6. Resultado observado no Orange Pi — 15/11/2026
+
+O usuário atualizou sua branch develop, instalou a dependência opcional na venv e selecionou `ASR_BACKEND=parakeet` no `.env`. A unit systemd iniciou no Orange Pi 3B/RK3566/8 GB, Debian 12 ARM64/Python 3.11, com `stt=True` e ferramentas disponíveis. O usuário confirmou que o reconhecimento ficou bem melhor e escolheu manter o Parakeet para uso.
+
+O log registrou nove capturas: uma inicial com `status=empty`, seguida de oito com texto. Nessas oito, o tempo ASR foi de 1.722 a 2.994 ms, média 2.358,125 ms e mediana 2.318,5 ms. Houve oito confirmações de playback do ESP. A inicial vazia retomou a escuta; sem WAV dessa rodada, sua causa não foi determinada. O carregamento inicial registrou 30.539 ms, incluindo obtenção/carregamento do modelo, separado da inferência. Na rodada Linux, `diagnostico=False` e `grava_audio=False`: métricas no journal continuam disponíveis, sem coleta adicional de WAV/JSONL.
+
+Logs anteriores do mesmo host com Whisper base mostraram STT de 4.344, 4.390 e 5.428 ms, em outras falas. Portanto, houve melhora observada de tempo e qualidade percebida, sem percentual universal ou avaliação WER controlada. Exemplos no Parakeet preservaram negação, temperatura/umidade e horário/reunião. “Souza” em lugar de “Sousa” permanece uma imprecisão; ausência de palavras só pode ser avaliada contra o áudio realmente falado.
+
+A consulta HA recebeu HTTP 200, mas trouxe listas success/failed vazias e foi marcada `hass_action_unconfirmed`; isso é confirmação do retorno da ferramenta, não falha do ASR ou prova de execução física. Robustez prolongada, memória/temperatura do host e comparação dos mesmos arquivos continuam sem medição nesta rodada. Os cerca de 664 MB do download se referem aos arquivos do Parakeet INT8.
 
 ## Referências
 
