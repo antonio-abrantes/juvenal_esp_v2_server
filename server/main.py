@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from config import PROJECT_ROOT, settings, esp_settings, hass_settings, number, tts_options
+from config import PROJECT_ROOT, settings, esp_settings, hass_settings, events_settings, number, tts_options
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +25,7 @@ from runtime import CapacityBusy
 from diagnostics import log_text
 from tools.coordinator import ToolsCoordinator
 from esp_transport import ESPTransport
+from events_api import EventsAPI
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
@@ -39,6 +40,7 @@ agent_state = "idle"
 resume_task = None
 catalog = CatalogStore(settings.data_dir)
 esp_transport = None
+events_api = EventsAPI(settings.data_dir, events_settings)
 
 
 def spawn(coroutine, name):
@@ -239,6 +241,7 @@ async def lifespan(app):
     logger.info("Ferramentas: disponíveis=%s motivo=%s",
                 capability["available"], capability["reason"] or "ready")
     try:
+        await events_api.start()
         if settings.local_voice_enabled and transcriber is not None:
             try:
                 from wake_word import MicroWakeWordDetector
@@ -257,6 +260,7 @@ async def lifespan(app):
         yield
     finally:
         engine.closing = True
+        events_api.closing = True
         if engine.active:
             engine.active.cancelled = True
         llm.cancel()
@@ -266,6 +270,10 @@ async def lifespan(app):
             await asyncio.wait_for(esp_transport.shutdown(), 2)
         except TimeoutError:
             logger.warning("Prazo de encerramento das conexões ESP atingido")
+        try:
+            await events_api.close()
+        except Exception:
+            logger.warning("Falha ao encerrar eventos; preservando cleanup da conversa")
         if wake_detector:
             await asyncio.to_thread(wake_detector.stop)
         for task in list(tasks):
@@ -287,6 +295,7 @@ async def lifespan(app):
 app = FastAPI(title="Juvenal Server", lifespan=lifespan)
 app.include_router(create_catalog_router(
     catalog, panel_authenticated, lambda: engine.tools if engine else None))
+app.include_router(events_api.router())
 frontend_dir = PROJECT_ROOT / "frontend"
 app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
 
@@ -315,7 +324,7 @@ async def health():
                              "esp_playback": bool(output and output.engine
                                  and hasattr(output.engine, "synthesize_pcm")),
                              "ws_v1": bool(settings.esp_token and transcriber is not None),
-                             "tools": tool_capability}}
+                             "tools": tool_capability, "events": events_api.capability()}}
 
 
 @app.websocket("/ws")

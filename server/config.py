@@ -343,3 +343,48 @@ class ESPSettings:
 
 
 esp_settings = ESPSettings.from_environment()
+
+
+@dataclass(frozen=True)
+class EventsSettings:
+    """Recepção de eventos opcional; configuração inválida não derruba a conversa."""
+
+    enabled: bool = False
+    api_key: str = field(default="", repr=False)
+    device_id: str = ""
+    humanize_default: bool = True
+    ttl_seconds: int = 300
+    queue_max: int = 100
+    retention_days: int = 7
+    actions_enabled: bool = False
+    log_content: bool = False
+    error: str = ""
+
+    @classmethod
+    def from_environment(cls):
+        enabled = False
+        try:
+            enabled = flag("EVENTS_ENABLED", False)
+            # Módulo desligado não depende de seus campos opcionais.
+            if not enabled:
+                return cls()
+            key = os.getenv("EVENTS_API_KEY", "")
+            if len(key) > 1024 or any(not 33 <= ord(char) <= 126 for char in key):
+                raise ValueError("events_api_key_invalid")
+            device = os.getenv("EVENTS_DEFAULT_DEVICE_ID", "").strip() or settings.esp_device_id
+            if (not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", device)
+                    or device != settings.esp_device_id):
+                raise ValueError("events_device_invalid")
+            return cls(
+                enabled=True, api_key=key, device_id=device,
+                humanize_default=flag("EVENTS_HUMANIZE_DEFAULT", True),
+                ttl_seconds=integer("EVENTS_DEFAULT_TTL_SECONDS", 300, 86400),
+                queue_max=integer("EVENTS_QUEUE_MAX", 100, 1000),
+                retention_days=integer("EVENTS_RETENTION_DAYS", 7, 30),
+                actions_enabled=flag("EVENTS_ACTIONS_ENABLED", False),
+                log_content=flag("EVENTS_LOG_CONTENT", False))
+        except (ValueError, TypeError):
+            return cls(enabled=enabled, error="events_configuration_invalid")
+
+
+events_settings = EventsSettings.from_environment()

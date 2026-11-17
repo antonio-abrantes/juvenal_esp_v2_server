@@ -51,6 +51,8 @@ htmlcov/
 *.rej
 *.sqlite
 *.sqlite3
+*.sqlite3-*
+*.sqlite-*
 *.db
 *.db-*
 
