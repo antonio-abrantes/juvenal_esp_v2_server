@@ -87,6 +87,7 @@ class EventsStore:
         self._connection = connection
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=2000")
+        connection.execute("PRAGMA foreign_keys=ON")
         version = connection.execute("PRAGMA user_version").fetchone()[0]
         if version not in {0, SCHEMA_VERSION}:
             raise EventError("events_schema_unsupported", 503)
@@ -118,6 +119,14 @@ class EventsStore:
             )""")
             connection.execute("CREATE INDEX IF NOT EXISTS events_expiry ON events(status, expires_at)")
             connection.execute("CREATE INDEX IF NOT EXISTS events_retention ON events(finished_at)")
+            connection.execute("""CREATE TABLE IF NOT EXISTS event_control_attempts (
+                job_id TEXT PRIMARY KEY REFERENCES events(job_id) ON DELETE CASCADE,
+                attempts INTEGER NOT NULL,
+                retry_at REAL NOT NULL
+            )""")
+            connection.execute("""DELETE FROM event_control_attempts WHERE NOT EXISTS (
+                SELECT 1 FROM events WHERE events.job_id=event_control_attempts.job_id
+            )""")
             connection.execute("PRAGMA user_version=1")
             # Preparação compatível com fases futuras; nenhum efeito é iniciado na EV-01.
             now = time.time()
@@ -221,6 +230,45 @@ class EventsStore:
 
     async def get(self, job_id):
         return await self._call(self._guard, self._read, job_id)
+
+    def _take_control_offer(self, device_id, expressions, playback):
+        # Esta oferta verifica somente a reserva do ESP. O status do job continua queued.
+        if not expressions:
+            return None
+        now = time.time()
+        slots = ",".join("?" for _ in expressions)
+        with self._transaction() as connection:
+            row = connection.execute(f"""SELECT e.job_id,e.kind,e.expression,e.expires_at,
+                COALESCE(a.attempts,0) AS attempts FROM events AS e
+                LEFT JOIN event_control_attempts AS a ON a.job_id=e.job_id
+                WHERE e.device_id=? AND e.status='queued' AND e.delivery_status='not_started'
+                AND e.expires_at>? AND (e.kind='reaction' OR (e.kind='notification' AND ?))
+                AND e.expression IN ({slots}) AND COALESCE(a.attempts,0)<3
+                AND COALESCE(a.retry_at,0)<=?
+                ORDER BY e.received_at,e.rowid LIMIT 1""",
+                (device_id, now, int(playback), *expressions, now)).fetchone()
+            if row is None:
+                return None
+            attempts = row["attempts"] + 1
+            connection.execute("""INSERT INTO event_control_attempts(job_id,attempts,retry_at)
+                VALUES(?,?,?) ON CONFLICT(job_id) DO UPDATE SET
+                attempts=excluded.attempts,retry_at=excluded.retry_at""",
+                (row["job_id"], attempts, now + 5 + 2 ** attempts))
+            return dict(row)
+
+    async def take_control_offer(self, device_id, expressions, playback):
+        return await self._call(self._guard, self._take_control_offer, device_id, expressions, playback)
+
+    def _confirm_control_offer(self, job_id):
+        now = time.time()
+        with self._transaction() as connection:
+            result = connection.execute("""UPDATE events SET delivery_status='control_confirmed',
+                updated_at=? WHERE job_id=? AND status='queued' AND delivery_status='not_started'
+                AND expires_at>?""", (now, job_id, now))
+            return result.rowcount == 1
+
+    async def confirm_control_offer(self, job_id):
+        return await self._call(self._guard, self._confirm_control_offer, job_id)
 
     async def maintain(self):
         await self._call(self._guard, self._sweep, time.time())

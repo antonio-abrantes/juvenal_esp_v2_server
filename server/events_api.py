@@ -31,8 +31,8 @@ class EventsAPI:
         self.config = config
         self.store = EventsStore(data_dir, config)
         self.closing = False
-        self._maintenance = None
-        self._stop = asyncio.Event()
+        self._worker = None
+        self._failure = ""
         self._active_requests = 0
         self._tokens = 5.0
         self._rate_at = time.monotonic()
@@ -46,6 +46,8 @@ class EventsAPI:
             return "events_api_key_missing"
         if self.closing:
             return "events_stopping"
+        if self._failure:
+            return self._failure
         if self.store.error:
             return self.store.error
         if not self.store.ready:
@@ -55,35 +57,42 @@ class EventsAPI:
     def capability(self):
         reason = self.unavailable()
         return {"enabled": self.config.enabled, "available": not bool(reason),
-                "reason": reason or None, "stage": "queue_only",
+                "reason": reason or None, "stage": "control_only",
                 "pending": self.store.pending_jobs,
                 "delivery_available": False, "delivery_reason": "events_delivery_not_implemented",
                 "actions_available": False}
 
-    async def start(self):
+    def start(self):
         if self.config.enabled and not self.config.error and self.config.api_key:
-            await self.store.start()
-            if self.store.ready:
-                self._maintenance = asyncio.create_task(self._maintain(), name="events-maintenance")
-        logger.info("Eventos: habilitado=%s recepcao=%s motivo=%s etapa=queue_only; sem entrega/acoes",
-                    self.config.enabled, not bool(self.unavailable()), self.unavailable() or "ready")
+            self._worker = asyncio.create_task(self._run(), name="events-worker")
+        else:
+            self._log_status()
 
-    async def _maintain(self):
-        while not self._stop.is_set():
-            try:
-                await asyncio.wait_for(self._stop.wait(), 1)
-            except TimeoutError:
+    def _log_status(self):
+        reason = self.unavailable()
+        logger.info("Eventos: habilitado=%s recepcao=%s motivo=%s etapa=control_only",
+                    self.config.enabled, not bool(reason), reason or "ready")
+
+    async def _run(self):
+        try:
+            await self.store.start()
+            self._log_status()
+            while self.store.ready and not self.closing:
+                await asyncio.sleep(1)
                 try:
                     await self.store.maintain()
                 except EventError:
                     # Erro sanitizado fica no health; próxima rodada pode recuperar a capacidade.
                     pass
+        except Exception as error:
+            self._failure = "events_worker_unavailable"
+            logger.warning("Worker de eventos indisponível (%s)", type(error).__name__)
 
     async def close(self):
         self.closing = True
-        self._stop.set()
-        if self._maintenance is not None:
-            await self._maintenance
+        if self._worker is not None:
+            self._worker.cancel()
+            await asyncio.gather(self._worker, return_exceptions=True)
         await self.store.close()
 
     def authorize(self, request):

@@ -26,6 +26,7 @@ from diagnostics import log_text
 from tools.coordinator import ToolsCoordinator
 from esp_transport import ESPTransport
 from events_api import EventsAPI
+from device_control import DeviceControl
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
@@ -41,6 +42,7 @@ resume_task = None
 catalog = CatalogStore(settings.data_dir)
 esp_transport = None
 events_api = EventsAPI(settings.data_dir, events_settings)
+device_control = DeviceControl(events_api, settings.esp_token)
 
 
 def spawn(coroutine, name):
@@ -241,7 +243,6 @@ async def lifespan(app):
     logger.info("Ferramentas: disponíveis=%s motivo=%s",
                 capability["available"], capability["reason"] or "ready")
     try:
-        await events_api.start()
         if settings.local_voice_enabled and transcriber is not None:
             try:
                 from wake_word import MicroWakeWordDetector
@@ -255,6 +256,7 @@ async def lifespan(app):
                 wake_detector.start_listening(detected)
             except Exception:
                 logger.warning("Wake local indisponível; início manual continua disponível.")
+        events_api.start()
         logger.info("Juvenal pronto: saída=%s entrada_local=%s stt=%s",
                     settings.output_mode, settings.local_voice_enabled, transcriber is not None)
         yield
@@ -270,6 +272,10 @@ async def lifespan(app):
             await asyncio.wait_for(esp_transport.shutdown(), 2)
         except TimeoutError:
             logger.warning("Prazo de encerramento das conexões ESP atingido")
+        try:
+            await device_control.close()
+        except Exception:
+            logger.warning("Falha ao encerrar o controle de eventos")
         try:
             await events_api.close()
         except Exception:
@@ -324,7 +330,8 @@ async def health():
                              "esp_playback": bool(output and output.engine
                                  and hasattr(output.engine, "synthesize_pcm")),
                              "ws_v1": bool(settings.esp_token and transcriber is not None),
-                             "tools": tool_capability, "events": events_api.capability()}}
+                             "tools": tool_capability, "events": {
+                                 **events_api.capability(), "control": device_control.capability()}}}
 
 
 @app.websocket("/ws")
@@ -390,6 +397,11 @@ async def websocket_endpoint(ws: WebSocket):
         if task and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+@app.websocket("/ws/esp/control")
+async def websocket_esp_control(ws: WebSocket):
+    await device_control.serve(ws)
 
 
 @app.websocket("/ws/esp")
