@@ -95,7 +95,7 @@ class ConversationEngine:
         # Executado sem await: a reserva é indivisível no event loop.
         if self.closing or self.active is not None or self.workers_busy:
             raise CapacityBusy("busy")
-        if origin == "notification":
+        if origin in {"notification", "event_action"}:
             self.active = Interaction(origin, ConversationContext(), identity=identity)
             return self.active
         now = time.monotonic()

@@ -26,6 +26,7 @@ from diagnostics import log_text
 from tools.coordinator import ToolsCoordinator
 from esp_transport import ESPTransport
 from events_api import EventsAPI
+from event_actions import EventActions
 from device_control import DeviceControl
 from notification_transport import NotificationTransport
 
@@ -128,8 +129,10 @@ async def return_to_idle():
 
 
 notifications = NotificationTransport(device_control, admit, return_to_idle)
+event_actions = EventActions(events_api, admit, return_to_idle)
 events_api.delivery_capability = notifications.capability
 events_api.validate_delivery = notifications.validate_delivery
+events_api.action_capability = event_actions.capability
 
 
 async def local_listen(session, initial_prompt):
@@ -264,6 +267,7 @@ async def lifespan(app):
                 logger.warning("Wake local indisponível; início manual continua disponível.")
         events_api.start()
         notifications.start(engine)
+        event_actions.start(engine)
         logger.info("Juvenal pronto: saída=%s entrada_local=%s stt=%s",
                     settings.output_mode, settings.local_voice_enabled, transcriber is not None)
         yield
@@ -275,6 +279,7 @@ async def lifespan(app):
         llm.cancel()
         output.cancel()
         tools.cancel()
+        await event_actions.close()
         try:
             await asyncio.wait_for(esp_transport.shutdown(), 2)
         except TimeoutError:

@@ -82,7 +82,7 @@ class HomeAssistantTransport:
     def cancel(self):
         self.worker.cancel()
 
-    async def execute(self, prepare, session):
+    async def execute(self, prepare, session, *, send_before=None):
         started = time.monotonic()
         timeout = min(hass_settings.timeout, session.remaining)
         deadline = time.monotonic() + timeout
@@ -128,6 +128,8 @@ class HomeAssistantTransport:
                 session.check()
                 if self.worker.cancel_event.is_set() or time.monotonic() >= deadline:
                     return result("denied", "action_cancelled", "A ação foi cancelada antes do envio.")
+                if send_before is not None and time.time() >= send_before:
+                    return result("denied", "event_expired", "O pedido expirou antes do envio.")
                 # Política local do turno, nunca extraída de conteúdo do LLM/receptor.
                 session.hass_delivery = "external" if mode == "text_endpoint" else "api"
                 logger.info("Turno %s: HA POST inicio request=%s modo=%s timeout_s=%.1f",

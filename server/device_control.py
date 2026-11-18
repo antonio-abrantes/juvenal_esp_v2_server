@@ -184,7 +184,7 @@ class DeviceControl:
                         if event == "notification.accepted":
                             remaining = candidate["expires_at"] - time.time()
                             if self.delivery_peer and remaining > 0 and self.can_offer():
-                                if candidate["kind"] == "notification":
+                                if candidate["kind"] in {"notification", "command"}:
                                     handoff_deadline = time.monotonic() + min(5, remaining)
                                     self.pending_media = (offer, candidate, handoff_deadline)
                                     await send(ws, "notification.proceed", **offer)
@@ -239,7 +239,8 @@ class DeviceControl:
                         continue
                     offer = {"job_id": candidate["job_id"], "offer_id": uuid4().hex}
                     offer_deadline = clock() + min(OFFER_MS, remaining_ms) / 1000
-                    await send(ws, "notification.offer", **offer, kind=candidate["kind"],
+                    kind = "notification" if candidate["kind"] == "command" else candidate["kind"]
+                    await send(ws, "notification.offer", **offer, kind=kind,
                                expression=candidate["expression"], remaining_ms=remaining_ms,
                                offer_timeout_ms=OFFER_MS)
         except (ControlError, EventError, TimeoutError) as error:

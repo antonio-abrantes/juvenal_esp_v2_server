@@ -1,4 +1,4 @@
-"""EV-01: HTTP autenticado, fila/status e manutenção; ainda sem dispatcher de áudio."""
+"""HTTP autenticado, fila, consulta e manutenção de eventos externos."""
 
 import asyncio
 import hmac
@@ -37,6 +37,7 @@ class EventsAPI:
         self._tokens = 5.0
         self._rate_at = time.monotonic()
         self.delivery_capability = lambda: (False, "notification_unavailable")
+        self.action_capability = lambda: (False, "event_actions_starting")
         self.validate_delivery = lambda document: None
 
     def unavailable(self):
@@ -59,12 +60,14 @@ class EventsAPI:
     def capability(self):
         reason = self.unavailable()
         delivery_available, delivery_reason = self.delivery_capability()
+        actions_available, actions_reason = self.action_capability()
         return {"enabled": self.config.enabled, "available": not bool(reason),
-                "reason": reason or None, "stage": "notifications",
+                "reason": reason or None, "stage": "actions",
                 "pending": self.store.pending_jobs,
                 "delivery_available": not reason and delivery_available,
                 "delivery_reason": reason or delivery_reason,
-                "actions_available": False}
+                "actions_available": not reason and actions_available,
+                "actions_reason": reason or actions_reason}
 
     def start(self):
         if self.config.enabled and not self.config.error and self.config.api_key:
@@ -74,7 +77,7 @@ class EventsAPI:
 
     def _log_status(self):
         reason = self.unavailable()
-        logger.info("Eventos: habilitado=%s recepcao=%s motivo=%s etapa=notifications",
+        logger.info("Eventos: habilitado=%s recepcao=%s motivo=%s etapa=actions",
                     self.config.enabled, not bool(reason), reason or "ready")
 
     async def _run(self):
@@ -164,19 +167,16 @@ class EventsAPI:
                 self.authorize(request)
                 with self.request_slot():
                     document = decode_event(await self.body(request))
-                    if document["kind"] == "command":
-                        # EV-04 ainda não existe. Não aceitar um comando que jamais será executado nesta versão.
-                        if not self.config.actions_enabled:
-                            raise EventError("event_actions_disabled", 403)
-                        raise EventError("event_actions_not_implemented", 503)
                     # Retry de um pedido já validado conserva os defaults originais,
                     # mesmo que o .env tenha mudado desde a primeira admissão.
                     result = await self.store.duplicate(document["event_id"], request_fingerprint(document))
                     if result is None:
+                        if document["kind"] == "command" and not self.config.actions_enabled:
+                            raise EventError("event_actions_disabled", 403)
                         submission = parse_event(document, self.config)
                         self.validate_delivery(submission.document)
                         result = await self.store.submit(submission)
-                    logger.info("Evento %s: status=%s duplicado=%s duracao_ms=%d; sem reproducao",
+                    logger.info("Evento %s: status=%s duplicado=%s duracao_ms=%d",
                                 result["job_id"], result["status"], result["duplicate"],
                                 int((time.monotonic() - started) * 1000))
                     if self.config.log_content:

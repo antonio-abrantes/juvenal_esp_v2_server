@@ -85,6 +85,8 @@ class NotificationTransport:
         return self.speech is not None, self.tts_reason
 
     def validate_delivery(self, document):
+        if document["kind"] == "command":
+            return  # A capacidade de falar é independente da ação solicitada.
         if self.control.online and document["expression"] not in self.control.expressions:
             raise EventError("unsupported_expression")
         if document["kind"] == "notification" and self.control.delivery_peer and not self.control.speaker_available:
@@ -125,6 +127,10 @@ class NotificationTransport:
         timeout = min(session.remaining, job["expires_at"] - time.time())
         if timeout <= 0:
             raise ESPProtocolError("notification_expired")
+        if job["kind"] == "command":
+            if not job["prepared_text"]:
+                raise EventError("notification_text_unavailable")
+            return job["prepared_text"]
         document = json.loads(job["payload_json"])
         original = document["text"]
         if not document["humanize"]:

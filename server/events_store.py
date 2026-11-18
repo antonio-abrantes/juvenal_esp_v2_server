@@ -1,4 +1,4 @@
-"""Fila SQLite privada, um worker e transações curtas, sem executar eventos."""
+"""Fila SQLite privada e registro durável dos resultados de ação e entrega."""
 
 import asyncio
 import logging
@@ -66,7 +66,11 @@ class EventsStore:
         connection = self._connection
         with self._transaction():
             connection.execute("""UPDATE events SET status='expired',
-                error='event_expired', finished_at=expires_at, updated_at=?, payload_json=NULL
+                error='event_expired', finished_at=expires_at, updated_at=?, payload_json=NULL,
+                action_code=CASE WHEN action_status='pending' THEN 'event_expired' ELSE action_code END,
+                action_status=CASE WHEN action_status='pending' THEN 'not_executed' ELSE action_status END,
+                delivery_status=CASE WHEN kind='command' AND action_status<>'pending'
+                    THEN 'expired' ELSE delivery_status END
                 WHERE status='queued' AND expires_at<=?""", (now, now))
             connection.execute("DELETE FROM events WHERE finished_at IS NOT NULL AND finished_at<=?",
                                (now - self.config.retention_days * 86400,))
@@ -113,6 +117,7 @@ class EventsStore:
                 updated_at REAL NOT NULL,
                 status TEXT NOT NULL,
                 action_status TEXT NOT NULL,
+                action_code TEXT,
                 delivery_status TEXT NOT NULL,
                 error TEXT NOT NULL DEFAULT '',
                 effect_started_at REAL,
@@ -121,8 +126,11 @@ class EventsStore:
             )""")
             connection.execute("CREATE INDEX IF NOT EXISTS events_expiry ON events(status, expires_at)")
             connection.execute("CREATE INDEX IF NOT EXISTS events_retention ON events(finished_at)")
-            if "humanization" not in {row["name"] for row in connection.execute("PRAGMA table_info(events)")}:
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(events)")}
+            if "humanization" not in columns:
                 connection.execute("ALTER TABLE events ADD COLUMN humanization TEXT")
+            if "action_code" not in columns:
+                connection.execute("ALTER TABLE events ADD COLUMN action_code TEXT")
             connection.execute("""CREATE TABLE IF NOT EXISTS event_control_attempts (
                 job_id TEXT PRIMARY KEY REFERENCES events(job_id) ON DELETE CASCADE,
                 attempts INTEGER NOT NULL,
@@ -136,8 +144,11 @@ class EventsStore:
                 text TEXT NOT NULL, humanization TEXT NOT NULL, local_date TEXT NOT NULL
             )""")
             connection.execute("PRAGMA user_version=1")
-            # Preparação compatível com fases futuras; nenhum efeito é iniciado na EV-01.
             now = time.time()
+            connection.execute("""UPDATE events SET status='unknown',action_status='unknown',
+                action_code='event_action_interrupted',delivery_status='not_requested',
+                error='event_action_interrupted',finished_at=?,updated_at=?,payload_json=NULL
+                WHERE status='executing' AND action_status='executing'""", (now, now))
             connection.execute("""UPDATE events SET status='unknown',
                 delivery_status='unknown', error='events_interrupted_unknown', finished_at=?, updated_at=?,
                 payload_json=NULL WHERE finished_at IS NULL
@@ -194,11 +205,12 @@ class EventsStore:
             connection.execute("""INSERT INTO events (
                 job_id,source,event_id,payload_hash,request_hash,payload_json,kind,device_id,
                 expression,humanize,received_at,expires_at,updated_at,status,action_status,delivery_status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'queued','not_requested','not_started')""",
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,'not_started')""",
                 (job_id, "default", document["event_id"], submission.payload_hash, submission.request_hash,
                  submission.payload_json, document["kind"], document["device_id"], document["expression"],
                  int(document["humanize"]) if "humanize" in document else None,
-                 now, now + document["expires_in_seconds"], now))
+                 now, now + document["expires_in_seconds"], now,
+                 "pending" if document["kind"] == "command" else "not_requested"))
         self.pending_jobs = count + 1
         return {"job_id": job_id, "status": "queued", "duplicate": False}
 
@@ -220,13 +232,15 @@ class EventsStore:
         self._sweep(time.time())
         row = self._connection.execute(
             """SELECT job_id,event_id,kind,device_id,expression,humanize,received_at,expires_at,
-                updated_at,finished_at,status,action_status,delivery_status,error,payload_json,humanization
+                updated_at,finished_at,status,action_status,action_code,delivery_status,error,payload_json,humanization
                 FROM events WHERE job_id=? AND source='default'""", (job_id,)).fetchone()
         if row is None:
             raise EventError("event_not_found", 404)
         result = {key: row[key] for key in (
             "job_id", "event_id", "kind", "device_id", "expression", "status",
             "action_status", "delivery_status")}
+        if row["kind"] == "command":
+            result["action_code"] = row["action_code"]
         result["humanize"] = bool(row["humanize"]) if row["humanize"] is not None else None
         result["error"] = row["error"] or None
         result["humanization"] = row["humanization"]
@@ -239,6 +253,55 @@ class EventsStore:
 
     async def get(self, job_id):
         return await self._call(self._guard, self._read, job_id)
+
+    def _next_command(self):
+        row = self._connection.execute("""SELECT job_id,payload_json,expires_at FROM events
+            WHERE kind='command' AND status='queued' AND action_status='pending' AND expires_at>?
+            ORDER BY received_at,rowid LIMIT 1""", (time.time(),)).fetchone()
+        return dict(row) if row is not None else None
+
+    async def next_command(self):
+        return await self._call(self._guard, self._next_command)
+
+    def _begin_action(self, job_id):
+        now = time.time()
+        with self._transaction() as connection:
+            changed = connection.execute("""UPDATE events SET status='executing',
+                action_status='executing',updated_at=? WHERE job_id=? AND kind='command'
+                AND status='queued' AND action_status='pending' AND expires_at>?""", (now, job_id, now))
+            return changed.rowcount == 1
+
+    async def begin_action(self, job_id):
+        return await self._call(self._guard, self._begin_action, job_id)
+
+    def _finish_action(self, job_id, action_status, code, speech):
+        now = time.time()
+        with self._transaction() as connection:
+            row = connection.execute("""SELECT expires_at FROM events WHERE job_id=?
+                AND status='executing' AND action_status='executing'""", (job_id,)).fetchone()
+            if row is None:
+                return False
+            if speech and row["expires_at"] > now:
+                status, delivery, error = "queued", "not_started", ""
+                connection.execute("""INSERT INTO event_prepared(job_id,text,humanization,local_date)
+                    VALUES(?,?,'direct','')""", (job_id, speech))
+            elif speech:
+                status, delivery, error = "expired", "expired", "event_expired"
+            elif action_status == "accepted_external":
+                status, delivery, error = "accepted_external", "accepted_external", ""
+            else:
+                status = "unknown" if action_status == "unknown" else "failed"
+                delivery, error = "not_requested", code
+            finished = None if status == "queued" else now
+            connection.execute("""UPDATE events SET status=?,action_status=?,action_code=?,
+                delivery_status=?,error=?,finished_at=?,updated_at=? WHERE job_id=?""",
+                (status, action_status, code, delivery, error, finished, now, job_id))
+        if finished is not None:
+            self.pending_jobs = max(0, self.pending_jobs - 1)
+        return True
+
+    async def finish_action(self, job_id, action_status, code, speech=""):
+        return await self._call(self._guard, self._finish_action, job_id, action_status, code, speech)
 
     def _take_control_offer(self, device_id, expressions, playback, delivery):
         if not expressions:
@@ -254,11 +317,13 @@ class EventsStore:
                 LEFT JOIN event_prepared AS p ON p.job_id=e.job_id
                 WHERE e.device_id=? AND e.status='queued'
                 AND (e.delivery_status='not_started' OR (? AND e.delivery_status='control_confirmed'))
-                AND e.expires_at>? AND (e.kind='reaction' OR (e.kind='notification' AND ?))
+                AND e.expires_at>? AND (e.kind='reaction' OR (? AND (
+                    e.kind='notification' OR (e.kind='command' AND ? AND p.text IS NOT NULL))))
                 AND e.expression IN ({slots})
                 AND (e.delivery_status='control_confirmed' OR (COALESCE(a.attempts,0)<3 AND COALESCE(a.retry_at,0)<=?))
                 ORDER BY e.received_at,e.rowid LIMIT 1""",
-                (device_id, int(delivery), now, int(playback), *expressions, now)).fetchone()
+                (device_id, int(delivery), now, int(playback), int(delivery),
+                 *expressions, now)).fetchone()
             if row is None:
                 return None
             attempts = row["attempts"] + 1

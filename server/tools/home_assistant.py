@@ -81,6 +81,28 @@ class AutomationTools:
         return True, ""
 
     @staticmethod
+    def event_command_availability():
+        available, reason = hass_settings.availability()
+        if available and hass_settings.require_catalog:
+            return False, "hass_catalog_required"
+        return available, reason
+
+    async def execute_event_command(self, command, session, expires_at):
+        available, reason = self.event_command_availability()
+        if not available:
+            if reason == "hass_catalog_required":
+                return ToolResult("denied", reason,
+                                  "Use a conversa do Juvenal para pedir uma ação do catálogo.")
+            return ToolResult("denied", reason, "O módulo Home Assistant está indisponível.")
+
+        def prepare():
+            if not self.event_command_availability()[0]:
+                raise ArgumentError("hass_unavailable")
+            return None, {"command": command.strip()}
+
+        return await self.transport.execute(prepare, session, send_before=expires_at)
+
+    @staticmethod
     def trusted_identity(session):
         if session.identity in {"local", "web:operator"}:
             return True
