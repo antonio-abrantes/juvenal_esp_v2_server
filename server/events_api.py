@@ -36,6 +36,8 @@ class EventsAPI:
         self._active_requests = 0
         self._tokens = 5.0
         self._rate_at = time.monotonic()
+        self.delivery_capability = lambda: (False, "notification_unavailable")
+        self.validate_delivery = lambda document: None
 
     def unavailable(self):
         if self.config.error:
@@ -56,10 +58,12 @@ class EventsAPI:
 
     def capability(self):
         reason = self.unavailable()
+        delivery_available, delivery_reason = self.delivery_capability()
         return {"enabled": self.config.enabled, "available": not bool(reason),
-                "reason": reason or None, "stage": "control_only",
+                "reason": reason or None, "stage": "notifications",
                 "pending": self.store.pending_jobs,
-                "delivery_available": False, "delivery_reason": "events_delivery_not_implemented",
+                "delivery_available": not reason and delivery_available,
+                "delivery_reason": reason or delivery_reason,
                 "actions_available": False}
 
     def start(self):
@@ -70,7 +74,7 @@ class EventsAPI:
 
     def _log_status(self):
         reason = self.unavailable()
-        logger.info("Eventos: habilitado=%s recepcao=%s motivo=%s etapa=control_only",
+        logger.info("Eventos: habilitado=%s recepcao=%s motivo=%s etapa=notifications",
                     self.config.enabled, not bool(reason), reason or "ready")
 
     async def _run(self):
@@ -169,7 +173,9 @@ class EventsAPI:
                     # mesmo que o .env tenha mudado desde a primeira admissão.
                     result = await self.store.duplicate(document["event_id"], request_fingerprint(document))
                     if result is None:
-                        result = await self.store.submit(parse_event(document, self.config))
+                        submission = parse_event(document, self.config)
+                        self.validate_delivery(submission.document)
+                        result = await self.store.submit(submission)
                     logger.info("Evento %s: status=%s duplicado=%s duracao_ms=%d; sem reproducao",
                                 result["job_id"], result["status"], result["duplicate"],
                                 int((time.monotonic() - started) * 1000))
@@ -190,7 +196,9 @@ class EventsAPI:
                     if not re.fullmatch(r"[0-9a-f]{32}", job_id):
                         raise EventError("event_not_found", 404)
                     result = await self.store.get(job_id)
-                    result.update(delivery_available=False, delivery_reason="events_delivery_not_implemented")
+                    capability = self.capability()
+                    result.update(delivery_available=capability["delivery_available"],
+                                  delivery_reason=capability["delivery_reason"])
                     return response(result)
             except EventError as error:
                 return response({"error": error.code}, error.status, error.retry_after)

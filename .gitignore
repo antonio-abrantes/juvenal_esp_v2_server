@@ -24,6 +24,7 @@ htmlcov/
 *.local
 *.local.*
 /configs/system_prompt.md
+/configs/event_prompt.md
 /system_prompt.md
 
 # Dados pessoais, histórico e artefatos de execução

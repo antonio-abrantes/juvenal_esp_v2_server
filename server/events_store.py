@@ -70,6 +70,8 @@ class EventsStore:
                 WHERE status='queued' AND expires_at<=?""", (now, now))
             connection.execute("DELETE FROM events WHERE finished_at IS NOT NULL AND finished_at<=?",
                                (now - self.config.retention_days * 86400,))
+            connection.execute("""DELETE FROM event_prepared WHERE job_id IN
+                (SELECT job_id FROM events WHERE finished_at IS NOT NULL)""")
         self.pending_jobs = connection.execute(
             "SELECT COUNT(*) FROM events WHERE finished_at IS NULL").fetchone()[0]
 
@@ -119,6 +121,8 @@ class EventsStore:
             )""")
             connection.execute("CREATE INDEX IF NOT EXISTS events_expiry ON events(status, expires_at)")
             connection.execute("CREATE INDEX IF NOT EXISTS events_retention ON events(finished_at)")
+            if "humanization" not in {row["name"] for row in connection.execute("PRAGMA table_info(events)")}:
+                connection.execute("ALTER TABLE events ADD COLUMN humanization TEXT")
             connection.execute("""CREATE TABLE IF NOT EXISTS event_control_attempts (
                 job_id TEXT PRIMARY KEY REFERENCES events(job_id) ON DELETE CASCADE,
                 attempts INTEGER NOT NULL,
@@ -126,6 +130,10 @@ class EventsStore:
             )""")
             connection.execute("""DELETE FROM event_control_attempts WHERE NOT EXISTS (
                 SELECT 1 FROM events WHERE events.job_id=event_control_attempts.job_id
+            )""")
+            connection.execute("""CREATE TABLE IF NOT EXISTS event_prepared (
+                job_id TEXT PRIMARY KEY REFERENCES events(job_id) ON DELETE CASCADE,
+                text TEXT NOT NULL, humanization TEXT NOT NULL, local_date TEXT NOT NULL
             )""")
             connection.execute("PRAGMA user_version=1")
             # Preparação compatível com fases futuras; nenhum efeito é iniciado na EV-01.
@@ -212,7 +220,7 @@ class EventsStore:
         self._sweep(time.time())
         row = self._connection.execute(
             """SELECT job_id,event_id,kind,device_id,expression,humanize,received_at,expires_at,
-                updated_at,finished_at,status,action_status,delivery_status,error,payload_json
+                updated_at,finished_at,status,action_status,delivery_status,error,payload_json,humanization
                 FROM events WHERE job_id=? AND source='default'""", (job_id,)).fetchone()
         if row is None:
             raise EventError("event_not_found", 404)
@@ -221,6 +229,7 @@ class EventsStore:
             "action_status", "delivery_status")}
         result["humanize"] = bool(row["humanize"]) if row["humanize"] is not None else None
         result["error"] = row["error"] or None
+        result["humanization"] = row["humanization"]
         for key in ("received_at", "expires_at", "updated_at", "finished_at"):
             result[key] = utc_text(row[key])
         if self.config.log_content and row["payload_json"] is not None:
@@ -231,22 +240,25 @@ class EventsStore:
     async def get(self, job_id):
         return await self._call(self._guard, self._read, job_id)
 
-    def _take_control_offer(self, device_id, expressions, playback):
-        # Esta oferta verifica somente a reserva do ESP. O status do job continua queued.
+    def _take_control_offer(self, device_id, expressions, playback, delivery):
         if not expressions:
             return None
         now = time.time()
         slots = ",".join("?" for _ in expressions)
         with self._transaction() as connection:
             row = connection.execute(f"""SELECT e.job_id,e.kind,e.expression,e.expires_at,
-                COALESCE(a.attempts,0) AS attempts FROM events AS e
+                e.payload_json,e.received_at,p.text AS prepared_text,p.humanization,p.local_date,
+                CASE WHEN e.delivery_status='control_confirmed' THEN 0 ELSE COALESCE(a.attempts,0) END AS attempts
+                FROM events AS e
                 LEFT JOIN event_control_attempts AS a ON a.job_id=e.job_id
-                WHERE e.device_id=? AND e.status='queued' AND e.delivery_status='not_started'
+                LEFT JOIN event_prepared AS p ON p.job_id=e.job_id
+                WHERE e.device_id=? AND e.status='queued'
+                AND (e.delivery_status='not_started' OR (? AND e.delivery_status='control_confirmed'))
                 AND e.expires_at>? AND (e.kind='reaction' OR (e.kind='notification' AND ?))
-                AND e.expression IN ({slots}) AND COALESCE(a.attempts,0)<3
-                AND COALESCE(a.retry_at,0)<=?
+                AND e.expression IN ({slots})
+                AND (e.delivery_status='control_confirmed' OR (COALESCE(a.attempts,0)<3 AND COALESCE(a.retry_at,0)<=?))
                 ORDER BY e.received_at,e.rowid LIMIT 1""",
-                (device_id, now, int(playback), *expressions, now)).fetchone()
+                (device_id, int(delivery), now, int(playback), *expressions, now)).fetchone()
             if row is None:
                 return None
             attempts = row["attempts"] + 1
@@ -254,10 +266,13 @@ class EventsStore:
                 VALUES(?,?,?) ON CONFLICT(job_id) DO UPDATE SET
                 attempts=excluded.attempts,retry_at=excluded.retry_at""",
                 (row["job_id"], attempts, now + 5 + 2 ** attempts))
+            if delivery:
+                connection.execute("""UPDATE events SET delivery_status='not_started',updated_at=?
+                    WHERE job_id=?""", (now, row["job_id"]))
             return dict(row)
 
-    async def take_control_offer(self, device_id, expressions, playback):
-        return await self._call(self._guard, self._take_control_offer, device_id, expressions, playback)
+    async def take_control_offer(self, device_id, expressions, playback, delivery=False):
+        return await self._call(self._guard, self._take_control_offer, device_id, expressions, playback, delivery)
 
     def _confirm_control_offer(self, job_id):
         now = time.time()
@@ -269,6 +284,47 @@ class EventsStore:
 
     async def confirm_control_offer(self, job_id):
         return await self._call(self._guard, self._confirm_control_offer, job_id)
+
+    def _save_prepared(self, job_id, text, mode, local_date):
+        with self._transaction() as connection:
+            connection.execute("""INSERT INTO event_prepared(job_id,text,humanization,local_date)
+                SELECT job_id,?,?,? FROM events WHERE job_id=? AND status='queued'
+                ON CONFLICT(job_id) DO UPDATE SET text=excluded.text,
+                    humanization=excluded.humanization,local_date=excluded.local_date""",
+                (text, mode, local_date, job_id))
+            connection.execute("UPDATE events SET humanization=? WHERE job_id=? AND status='queued'",
+                               (mode, job_id))
+
+    async def save_prepared(self, job_id, text, mode, local_date):
+        await self._call(self._guard, self._save_prepared, job_id, text, mode, local_date)
+
+    def _begin_effect(self, job_id):
+        now = time.time()
+        with self._transaction() as connection:
+            changed = connection.execute("""UPDATE events SET status='delivering',delivery_status='delivering',
+                humanization=CASE WHEN kind='notification' AND humanize=0 THEN 'direct' ELSE humanization END,
+                effect_started_at=?,updated_at=? WHERE job_id=? AND status='queued' AND expires_at>?""",
+                (now, now, job_id, now))
+            return changed.rowcount == 1
+
+    async def begin_effect(self, job_id):
+        return await self._call(self._guard, self._begin_effect, job_id)
+
+    def _finish_delivery(self, job_id, status, error):
+        now = time.time()
+        with self._transaction() as connection:
+            changed = connection.execute("""UPDATE events SET status=?,delivery_status=?,error=?,
+                updated_at=?,finished_at=? WHERE job_id=? AND
+                (status='delivering' OR (status='queued' AND ?='failed'))""",
+                (status, status, error, now, now, job_id, status))
+            if changed.rowcount:
+                connection.execute("DELETE FROM event_prepared WHERE job_id=?", (job_id,))
+        if changed.rowcount:
+            self.pending_jobs = max(0, self.pending_jobs - 1)
+        return changed.rowcount == 1
+
+    async def finish_delivery(self, job_id, status, error=""):
+        return await self._call(self._guard, self._finish_delivery, job_id, status, error)
 
     async def maintain(self):
         await self._call(self._guard, self._sweep, time.time())

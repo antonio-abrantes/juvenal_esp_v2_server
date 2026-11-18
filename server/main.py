@@ -27,6 +27,7 @@ from tools.coordinator import ToolsCoordinator
 from esp_transport import ESPTransport
 from events_api import EventsAPI
 from device_control import DeviceControl
+from notification_transport import NotificationTransport
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
@@ -124,6 +125,11 @@ async def return_to_idle():
     await set_state("idle")
     if wake_detector:
         wake_detector.resume()
+
+
+notifications = NotificationTransport(device_control, admit, return_to_idle)
+events_api.delivery_capability = notifications.capability
+events_api.validate_delivery = notifications.validate_delivery
 
 
 async def local_listen(session, initial_prompt):
@@ -257,6 +263,7 @@ async def lifespan(app):
             except Exception:
                 logger.warning("Wake local indisponível; início manual continua disponível.")
         events_api.start()
+        notifications.start(engine)
         logger.info("Juvenal pronto: saída=%s entrada_local=%s stt=%s",
                     settings.output_mode, settings.local_voice_enabled, transcriber is not None)
         yield
@@ -272,6 +279,10 @@ async def lifespan(app):
             await asyncio.wait_for(esp_transport.shutdown(), 2)
         except TimeoutError:
             logger.warning("Prazo de encerramento das conexões ESP atingido")
+        try:
+            await notifications.close()
+        except Exception:
+            logger.warning("Falha ao encerrar a entrega de avisos")
         try:
             await device_control.close()
         except Exception:
@@ -402,6 +413,11 @@ async def websocket_endpoint(ws: WebSocket):
 @app.websocket("/ws/esp/control")
 async def websocket_esp_control(ws: WebSocket):
     await device_control.serve(ws)
+
+
+@app.websocket("/ws/esp/notify")
+async def websocket_esp_notification(ws: WebSocket):
+    await notifications.serve(ws)
 
 
 @app.websocket("/ws/esp")

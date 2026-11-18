@@ -79,7 +79,7 @@ class LLMClient:
         return payload
 
     async def chat(self, user_message, history=(), timeout=None, *, messages=None,
-                   tool_schemas=(), instructions="", reply=None):
+                   tool_schemas=(), instructions="", reply=None, system_prompt=None):
         timeout = min(timeout or settings.llm_timeout, settings.llm_timeout)
         deadline = time.monotonic() + timeout
         tokens = queue.Queue(maxsize=128)
@@ -102,13 +102,15 @@ class LLMClient:
 
         def produce():
             start_gate.wait()
-            conversation = [{"role": "system", "content": _resolve_placeholders(self._prompt_template)}]
+            prompt = _resolve_placeholders(self._prompt_template) if system_prompt is None else system_prompt
+            conversation = [{"role": "system", "content": prompt}]
             if instructions:
                 conversation.append({"role": "system", "content": instructions})
             conversation.extend(messages if messages is not None else
                                 [*history, {"role": "user", "content": user_message}])
-            payload = ({"message": (instructions + "\n\nMensagem do usuário:\n" + user_message
-                                    if instructions else user_message)} if self._is_webhook else
+            webhook_instructions = instructions or system_prompt
+            payload = ({"message": (webhook_instructions + "\n\nMensagem do usuário:\n" + user_message
+                                    if webhook_instructions else user_message)} if self._is_webhook else
                        self._payload(conversation, True))
             if tool_schemas:
                 if self._is_webhook:

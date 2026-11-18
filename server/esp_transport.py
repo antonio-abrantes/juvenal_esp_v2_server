@@ -149,24 +149,28 @@ class ESPConnection:
                     raise ESPProtocolError("input_totals_mismatch")
                 self.receiving = False
                 self.enqueue("end", payload)
-            elif event == "playback.credit":
-                consumed = payload.get("consumed_bytes")
-                if (not self.output_active or set(payload) != {"consumed_bytes"}
-                        or type(consumed) is not int or consumed % 2
-                        or not self.consumed_bytes <= consumed <= self.sent_bytes):
-                    raise ESPProtocolError("invalid_playback_credit")
-                self.consumed_bytes = consumed
-                self.credit.set()
-            elif event == "playback.finished":
-                async with self.send_lock:
-                    if (not self.output_active or not self.output_end_sent or self.playback_done.is_set()
-                            or payload != {"total_bytes": self.sent_bytes,
-                                          "total_samples": self.sent_bytes // 2}
-                            or any(type(value) is not int for value in payload.values())):
-                        raise ESPProtocolError("invalid_playback_ack")
-                    self.playback_done.set()
-            else:
+            elif not await self.receive_playback(event, payload):
                 raise ESPProtocolError("unexpected_event")
+
+    async def receive_playback(self, event, payload):
+        if event == "playback.credit":
+            consumed = payload.get("consumed_bytes")
+            if (not self.output_active or set(payload) != {"consumed_bytes"}
+                    or type(consumed) is not int or consumed % 2
+                    or not self.consumed_bytes <= consumed <= self.sent_bytes):
+                raise ESPProtocolError("invalid_playback_credit")
+            self.consumed_bytes = consumed
+            self.credit.set()
+        elif event == "playback.finished":
+            async with self.send_lock:
+                if (not self.output_active or not self.output_end_sent or self.playback_done.is_set()
+                        or payload != {"total_bytes": self.sent_bytes, "total_samples": self.sent_bytes // 2}
+                        or any(type(value) is not int for value in payload.values())):
+                    raise ESPProtocolError("invalid_playback_ack")
+                self.playback_done.set()
+        else:
+            return False
+        return True
 
     async def next_input(self, deadline):
         timeout = min(deadline, self.session.deadline) - time.monotonic()

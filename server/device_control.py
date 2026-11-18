@@ -14,6 +14,7 @@ from tools.registry import ArgumentError, decode_json
 logger = logging.getLogger(__name__)
 HEARTBEAT = 30
 OFFER_MS = 5000
+DELIVERY_HEADER = "x-juvenal-events-delivery"
 
 
 class ControlError(ValueError):
@@ -53,20 +54,44 @@ class DeviceControl:
         self.state = None
         self.last_result = None
         self.closing = False
+        self.pending_media = None
+        self.expressions = ()
+        self.delivery_peer = False
+        self.speaker_available = False
+        self.playback_available = lambda: False
+        self.can_offer = lambda: True
 
     def capability(self):
-        return {"online": self.online, "state": self.state, "last_result": self.last_result}
+        return {"online": self.online, "state": self.state, "last_result": self.last_result,
+                "delivery": self.delivery_peer, "expressions": self.expressions}
+
+    def authorized(self, ws):
+        headers = ws.headers.getlist("authorization")
+        return (not self.closing and not self.events.unavailable() and self.token and len(headers) == 1
+                and hmac.compare_digest(
+                    headers[0].encode("utf-8"), ("Bearer " + self.token).encode("utf-8")))
+
+    def claim_media(self, payload):
+        pending = self.pending_media
+        if pending is None:
+            return None
+        ids, job, deadline = pending
+        if time.monotonic() >= deadline:
+            self.pending_media = None
+            return None
+        if any(payload[key] != value for key, value in ids.items()):
+            return None
+        self.pending_media = None
+        return job
 
     async def serve(self, ws):
-        headers = ws.headers.getlist("authorization")
-        if (self.closing or self.events.unavailable() or self.peer is not None or not self.token
-                or len(headers) != 1 or not hmac.compare_digest(
-                    headers[0].encode("utf-8"), ("Bearer " + self.token).encode("utf-8"))):
+        if not self.authorized(ws) or self.peer is not None:
             await ws.close(code=1008)
             return
         self.peer = asyncio.current_task()
         reader = None
         close_code = 1000
+        reaction = None
         try:
             await ws.accept()
             event, hello = await asyncio.wait_for(receive(ws), timeout=5)
@@ -90,10 +115,15 @@ class DeviceControl:
             await send(ws, "control.ready", connection_id=uuid4().hex,
                        heartbeat_seconds=HEARTBEAT, events_enabled=True)
             self.online = True
+            self.expressions = tuple(expressions)
+            self.delivery_peer = ws.headers.getlist(DELIVERY_HEADER) == ["1"]
+            self.speaker_available = hello["playback"]
             logger.info("Controle de eventos conectado")
             reader = asyncio.create_task(receive(ws))
             offer = None
             offer_deadline = 0.0
+            handoff_deadline = None
+            reaction_deadline = 0.0
             sequence = 0
             pending_ping = None
             clock = asyncio.get_running_loop().time
@@ -103,6 +133,15 @@ class DeviceControl:
             while not self.closing:
                 done, _ = await asyncio.wait({reader}, timeout=1)
                 now = clock()
+                if handoff_deadline is not None:
+                    if time.monotonic() >= handoff_deadline:
+                        return
+                    if reader in done:
+                        event, _ = reader.result()
+                        if event is None:
+                            return
+                        reader = asyncio.create_task(receive(ws))
+                    continue
                 if now - last_pong >= 3 * HEARTBEAT:
                     raise ControlError("control_heartbeat_timeout")
                 if reader in done:
@@ -124,7 +163,17 @@ class DeviceControl:
                                 or type(payload["speaker_available"]) is not bool):
                             raise ControlError("control_state_invalid")
                         self.state = state
-                        hello["playback"] = payload["speaker_available"]
+                        self.speaker_available = payload["speaker_available"]
+                    elif event == "notification.finished":
+                        if (reaction is None or set(payload) != {"job_id", "offer_id", "result"}
+                                or any(payload[key] != value for key, value in reaction.items())
+                                or payload["result"] not in ("completed", "failed")):
+                            raise ControlError("control_reaction_invalid")
+                        result = payload["result"]
+                        await self.events.store.finish_delivery(reaction["job_id"], result,
+                                                                "" if result == "completed" else "reaction_failed")
+                        self.last_result = result
+                        reaction = None
                     elif event in {"notification.accepted", "notification.deferred"}:
                         keys = {"job_id", "offer_id"}
                         if event == "notification.deferred":
@@ -133,10 +182,26 @@ class DeviceControl:
                                 or any(payload[key] != offer[key] for key in ("job_id", "offer_id"))):
                             raise ControlError("control_offer_stale")
                         if event == "notification.accepted":
-                            confirmed = await self.events.store.confirm_control_offer(offer["job_id"])
-                            result = "control_confirmed" if confirmed else "expired"
-                            await send(ws, "notification.release", job_id=offer["job_id"],
-                                       offer_id=offer["offer_id"], result=result)
+                            remaining = candidate["expires_at"] - time.time()
+                            if self.delivery_peer and remaining > 0 and self.can_offer():
+                                if candidate["kind"] == "notification":
+                                    handoff_deadline = time.monotonic() + min(5, remaining)
+                                    self.pending_media = (offer, candidate, handoff_deadline)
+                                    await send(ws, "notification.proceed", **offer)
+                                    continue
+                                reaction = offer
+                                if await self.events.store.begin_effect(offer["job_id"]):
+                                    await send(ws, "notification.proceed", **offer)
+                                    offer = None
+                                    reaction_deadline = clock() + 7
+                                    continue
+                                reaction = None
+                            confirmed = (not self.delivery_peer and
+                                         await self.events.store.confirm_control_offer(offer["job_id"]))
+                            result = "control_confirmed" if confirmed else "expired" if remaining <= 0 else "deferred"
+                            if not self.delivery_peer and not confirmed:
+                                result = "expired"
+                            await send(ws, "notification.release", **offer, result=result)
                         else:
                             result = payload["reason"]
                             if type(result) is not str or result not in {"busy", "not_ready", "unsupported"}:
@@ -148,16 +213,23 @@ class DeviceControl:
                         raise ControlError("control_event_invalid")
                 if offer is not None and now >= offer_deadline:
                     raise ControlError("control_offer_timeout")
+                if reaction is not None and now >= reaction_deadline:
+                    raise ControlError("control_reaction_timeout")
                 if now >= next_ping and pending_ping is None:
                     sequence += 1
                     await send(ws, "control.ping", sequence=sequence)
                     pending_ping = sequence
                     next_ping = now + HEARTBEAT
-                if offer is None and self.state == "idle" and now >= next_offer and not self.events.unavailable():
+                media_pending = self.pending_media is not None and time.monotonic() < self.pending_media[2]
+                if (offer is None and reaction is None and not media_pending and self.state == "idle"
+                        and now >= next_offer and not self.events.unavailable()
+                        and (not self.delivery_peer or self.can_offer())):
                     next_offer = now + 1
                     try:
                         candidate = await self.events.store.take_control_offer(
-                            hello["device_id"], expressions, hello["playback"])
+                            hello["device_id"], expressions,
+                            self.speaker_available and (not self.delivery_peer or self.playback_available()),
+                            self.delivery_peer)
                     except EventError:
                         continue
                     if candidate is None:
@@ -179,6 +251,9 @@ class DeviceControl:
         finally:
             self.online = False
             self.state = None
+            self.delivery_peer = False
+            self.expressions = ()
+            self.speaker_available = False
             if reader is not None:
                 reader.cancel()
                 await asyncio.gather(reader, return_exceptions=True)
@@ -188,6 +263,11 @@ class DeviceControl:
                 pass
             finally:
                 self.peer = None
+                if reaction is not None:
+                    try:
+                        await self.events.store.finish_delivery(reaction["job_id"], "unknown", "reaction_ack_missing")
+                    except EventError:
+                        logger.warning("Estado da reação será recuperado no próximo início")
 
     async def close(self):
         self.closing = True
